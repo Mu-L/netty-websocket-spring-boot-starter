@@ -142,7 +142,7 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
         HttpHeaders headers = req.headers();
         String host = headers.get(HttpHeaderNames.HOST);
-        if (StringUtils.isEmpty(host)) {
+        if (!StringUtils.hasLength(host)) {
             if (forbiddenByteBuf != null) {
                 res = new DefaultFullHttpResponse(HTTP_1_1, FORBIDDEN, forbiddenByteBuf.retainedDuplicate());
             } else {
@@ -152,7 +152,7 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             return;
         }
 
-        if (!StringUtils.isEmpty(pojoEndpointServer.getHost()) && !pojoEndpointServer.getHost().equals("0.0.0.0") && !pojoEndpointServer.getHost().equals(host.split(":")[0])) {
+        if (StringUtils.hasLength(pojoEndpointServer.getHost()) && !pojoEndpointServer.getHost().equals("0.0.0.0") && !pojoEndpointServer.getHost().equals(host.split(":")[0])) {
             if (forbiddenByteBuf != null) {
                 res = new DefaultFullHttpResponse(HTTP_1_1, FORBIDDEN, forbiddenByteBuf.retainedDuplicate());
             } else {
@@ -244,10 +244,10 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             }
             String finalPattern = pattern;
 
-            String header = headers.get(HttpHeaders.Names.SEC_WEBSOCKET_PROTOCOL);
+            String header = headers.get(SEC_WEBSOCKET_PROTOCOL);
             HttpHeaders httpHeaders = null;
-            if (header!=null) {
-                httpHeaders = new DefaultHttpHeaders().add(HttpHeaders.Names.SEC_WEBSOCKET_PROTOCOL, header);
+            if (header != null) {
+                httpHeaders = new DefaultHttpHeaders().add(SEC_WEBSOCKET_PROTOCOL, header);
             }
             final ChannelFuture handshakeFuture = handshaker.handshake(ctx.channel(), req,httpHeaders,ctx.channel().newPromise());
 

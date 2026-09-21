@@ -48,7 +48,7 @@ public class WebsocketServer {
     public void init() throws InterruptedException, SSLException {
         EventExecutorGroup eventExecutorGroup = null;
         final SslContext sslCtx;
-        if (!StringUtils.isEmpty(config.getKeyStore())) {
+        if (StringUtils.hasLength(config.getKeyStore())) {
             sslCtx = SslUtils.createSslContext(config.getKeyPassword(), config.getKeyStore(), config.getKeyStoreType(), config.getKeyStorePassword(), config.getTrustStore(), config.getTrustStoreType(), config.getTrustStorePassword());
         } else {
             sslCtx = null;
