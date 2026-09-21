@@ -30,6 +30,11 @@ import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
+    /**
+     * 与 Netty 默认压缩级别保持一致（{@code PerMessageDeflateServerExtensionHandshaker} 的默认值）
+     */
+    private static final int DEFAULT_COMPRESSION_LEVEL = 6;
+
     private final PojoEndpointServer pojoEndpointServer;
     private final ServerEndpointConfig config;
     private final EventExecutorGroup eventExecutorGroup;
@@ -222,7 +227,7 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         ChannelPipeline pipeline = ctx.pipeline();
         if (config.isUseCompressionHandler()) {
             // Add WebSocketServerCompressionHandler, but don't shake hands
-            pipeline.addLast(new WebSocketServerCompressionHandler());
+            pipeline.addLast(new WebSocketServerCompressionHandler(DEFAULT_COMPRESSION_LEVEL));
             // Let the request by WebSocketServerCompressionHandler forwarding to the next handler
             ctx.fireChannelRead(req.retain());
         }

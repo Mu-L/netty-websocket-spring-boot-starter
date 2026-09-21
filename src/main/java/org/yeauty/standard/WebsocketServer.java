@@ -2,7 +2,7 @@ package org.yeauty.standard;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
-import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.HttpObjectAggregator;
@@ -60,8 +60,8 @@ public class WebsocketServer {
         if (config.isUseEventExecutorGroup()) {
             eventExecutorGroup = new DefaultEventExecutorGroup(config.getEventExecutorGroupThreads() == 0 ? 16 : config.getEventExecutorGroupThreads());
         }
-        EventLoopGroup boss = new NioEventLoopGroup(config.getBossLoopGroupThreads());
-        EventLoopGroup worker = new NioEventLoopGroup(config.getWorkerLoopGroupThreads());
+        EventLoopGroup boss = new MultiThreadIoEventLoopGroup(config.getBossLoopGroupThreads(), NioIoHandler.newFactory());
+        EventLoopGroup worker = new MultiThreadIoEventLoopGroup(config.getWorkerLoopGroupThreads(), NioIoHandler.newFactory());
         ServerBootstrap bootstrap = new ServerBootstrap();
         EventExecutorGroup finalEventExecutorGroup = eventExecutorGroup;
         bootstrap.group(boss, worker)

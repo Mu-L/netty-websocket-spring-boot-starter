@@ -69,7 +69,7 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
         }
 
         for (Class<?> endpointClass : endpointClasses) {
-            if (ClassUtils.isCglibProxyClass(endpointClass)) {
+            if (endpointClass.getName().contains(ClassUtils.CGLIB_CLASS_SEPARATOR)) {
                 registerEndpoint(endpointClass.getSuperclass());
             } else {
                 registerEndpoint(endpointClass);
