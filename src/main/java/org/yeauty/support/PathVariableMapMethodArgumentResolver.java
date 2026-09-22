@@ -24,6 +24,9 @@ public class PathVariableMapMethodArgumentResolver implements MethodArgumentReso
         PathVariable ann = parameter.getParameterAnnotation(PathVariable.class);
         String name = ann.name();
         if (name.isEmpty()) {
+            name = ann.value();
+        }
+        if (name.isEmpty()) {
             name = parameter.getParameterName();
             if (name == null) {
                 throw new IllegalArgumentException(
