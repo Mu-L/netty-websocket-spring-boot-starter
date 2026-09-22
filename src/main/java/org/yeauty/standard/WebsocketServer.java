@@ -36,6 +36,11 @@ public class WebsocketServer {
 
     private final ServerEndpointConfig config;
 
+    private volatile Channel serverChannel;
+    private volatile EventLoopGroup boss;
+    private volatile EventLoopGroup worker;
+    private volatile EventExecutorGroup eventExecutorGroup;
+    private Thread shutdownHook;
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(WebsocketServer.class);
 
@@ -46,7 +51,6 @@ public class WebsocketServer {
     }
 
     public void init() throws InterruptedException, SSLException {
-        EventExecutorGroup eventExecutorGroup = null;
         final SslContext sslCtx;
         if (StringUtils.hasLength(config.getKeyStore())) {
             sslCtx = SslUtils.createSslContext(config.getKeyPassword(), config.getKeyStore(), config.getKeyStoreType(), config.getKeyStorePassword(), config.getTrustStore(), config.getTrustStoreType(), config.getTrustStorePassword());
@@ -58,13 +62,14 @@ public class WebsocketServer {
         final CorsConfig corsConfig = createCorsConfig(corsOrigins, corsAllowCredentials);
 
         if (config.isUseEventExecutorGroup()) {
-            eventExecutorGroup = new DefaultEventExecutorGroup(config.getEventExecutorGroupThreads() == 0 ? 16 : config.getEventExecutorGroupThreads());
+            this.eventExecutorGroup = new DefaultEventExecutorGroup(config.getEventExecutorGroupThreads() == 0 ? 16 : config.getEventExecutorGroupThreads());
         }
-        EventLoopGroup boss = new MultiThreadIoEventLoopGroup(config.getBossLoopGroupThreads(), NioIoHandler.newFactory());
-        EventLoopGroup worker = new MultiThreadIoEventLoopGroup(config.getWorkerLoopGroupThreads(), NioIoHandler.newFactory());
+        this.boss = new MultiThreadIoEventLoopGroup(config.getBossLoopGroupThreads(), NioIoHandler.newFactory());
+        this.worker = new MultiThreadIoEventLoopGroup(config.getWorkerLoopGroupThreads(), NioIoHandler.newFactory());
+        EventExecutorGroup eventExecutorGroup = this.eventExecutorGroup;
         ServerBootstrap bootstrap = new ServerBootstrap();
         EventExecutorGroup finalEventExecutorGroup = eventExecutorGroup;
-        bootstrap.group(boss, worker)
+        bootstrap.group(this.boss, this.worker)
                 .channel(NioServerSocketChannel.class)
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, config.getConnectTimeoutMillis())
                 .option(ChannelOption.SO_BACKLOG, config.getSoBacklog())
@@ -111,16 +116,58 @@ public class WebsocketServer {
             }
         }
 
-        channelFuture.addListener(future -> {
-            if (!future.isSuccess()) {
+        final ChannelFuture bindFuture = channelFuture;
+        bindFuture.addListener(future -> {
+            if (future.isSuccess()) {
+                serverChannel = bindFuture.channel();
+            } else {
                 future.cause().printStackTrace();
             }
         });
 
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            boss.shutdownGracefully().syncUninterruptibly();
-            worker.shutdownGracefully().syncUninterruptibly();
-        }));
+        this.shutdownHook = new Thread(this::destroy, "netty-websocket-shutdown-hook");
+        Runtime.getRuntime().addShutdownHook(this.shutdownHook);
+    }
+
+    /**
+     * 优雅关闭：释放监听端口与线程池。可重复调用。
+     */
+    public synchronized void destroy() {
+        Thread hook = this.shutdownHook;
+        if (hook != null) {
+            this.shutdownHook = null;
+            try {
+                Runtime.getRuntime().removeShutdownHook(hook);
+            } catch (IllegalStateException | SecurityException ignored) {
+                // JVM 正在退出或不允许操作 shutdown hook，忽略即可
+            }
+        }
+
+        Channel channel = this.serverChannel;
+        if (channel != null) {
+            this.serverChannel = null;
+            channel.close().awaitUninterruptibly();
+        }
+
+        EventExecutorGroup executorGroup = this.eventExecutorGroup;
+        if (executorGroup != null) {
+            this.eventExecutorGroup = null;
+            executorGroup.shutdownGracefully();
+        }
+
+        EventLoopGroup bossGroup = this.boss;
+        if (bossGroup != null) {
+            this.boss = null;
+            bossGroup.shutdownGracefully().awaitUninterruptibly();
+        }
+
+        EventLoopGroup workerGroup = this.worker;
+        if (workerGroup != null) {
+            this.worker = null;
+            workerGroup.shutdownGracefully().awaitUninterruptibly();
+        }
+
+        logger.info(String.format("\033[34mNetty WebSocket stopped on port: %s .\033[0m", config.getPort()));
     }
 
     private CorsConfig createCorsConfig(String[] corsOrigins, Boolean corsAllowCredentials) {
