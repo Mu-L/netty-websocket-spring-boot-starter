@@ -7,7 +7,7 @@ netty-websocket-spring-boot-starter [![License](http://img.shields.io/:license-a
 本项目帮助你在spring-boot中使用Netty来开发WebSocket服务器，并像spring-websocket的注解开发一样简单
 
 ### 要求
-- jdk版本为21
+- jdk版本为17及以上（与 spring-boot 4 的最低要求一致；本项目在 jdk 21 上构建与测试）
 - spring-boot版本为4.x（基于 Spring Framework 7）
 - Netty版本为4.2.x
 
@@ -283,7 +283,7 @@ src/
 
 #### 1.0
 
-- 升级支持spring-boot4（Spring Framework 7），最低要求 jdk 21
+- 升级支持spring-boot4（Spring Framework 7）；最低 jdk 为 17，与 spring-boot 4 的基线一致，本项目在 jdk 21 上构建与测试
 - 更新`Netty`版本到 `4.2.18.Final`
 - 自动配置注册方式由 `META-INF/spring.factories` 迁移到 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`
 - 适配Spring 7 / Netty 4.2 中被移除或废弃的API
