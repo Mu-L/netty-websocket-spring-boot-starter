@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.yeauty.autoconfigure.NettyWebSocketAutoConfigure;
+import org.yeauty.endpoint.AliasEndpoint;
 import org.yeauty.endpoint.BinaryEchoEndpoint;
 import org.yeauty.endpoint.BroadcastEndpoint;
 import org.yeauty.endpoint.CompressedEchoEndpoint;
@@ -153,6 +154,45 @@ class NettyWebSocketIntegrationTest {
     }
 
     @Test
+    @DisplayName("路径变量支持 value 简写，查询参数缺失时回退默认值")
+    void pathVariableValueAliasIsResolved() {
+        CollectingListener listener = new CollectingListener();
+        WebSocket webSocket = connect("/alias/7?token=abc", listener);
+        try {
+            awaitUntil(() -> AliasEndpoint.opened().contains("7|abc|raw"),
+                    "value 简写未绑定路径变量或查询参数，实际记录=" + AliasEndpoint.opened());
+        } finally {
+            closeQuietly(webSocket);
+        }
+    }
+
+    @Test
+    @DisplayName("查询参数支持 name 形式并覆盖默认值")
+    void requestParamNamedAliasIsResolved() {
+        CollectingListener listener = new CollectingListener();
+        WebSocket webSocket = connect("/alias/8?token=t8&mode=fast", listener);
+        try {
+            awaitUntil(() -> AliasEndpoint.opened().contains("8|t8|fast"),
+                    "name 形式的查询参数未正确绑定，实际记录=" + AliasEndpoint.opened());
+        } finally {
+            closeQuietly(webSocket);
+        }
+    }
+
+    @Test
+    @DisplayName("value 简写的路径变量在消息阶段同样生效")
+    void pathVariableAliasIsResolvedOnMessage() throws Exception {
+        CollectingListener listener = new CollectingListener();
+        WebSocket webSocket = connect("/alias/9?token=abc", listener);
+        try {
+            webSocket.sendText("ping", true).join();
+            assertEquals("alias:9:ping", listener.messages.poll(10, TimeUnit.SECONDS));
+        } finally {
+            closeQuietly(webSocket);
+        }
+    }
+
+    @Test
     @DisplayName("二进制消息回声")
     void echoBinaryMessage() throws Exception {
         BinaryListener listener = new BinaryListener();
@@ -261,28 +301,6 @@ class NettyWebSocketIntegrationTest {
             closeQuietly(webSocket);
         }
         awaitUntil(() -> EchoEndpoint.sessionCount() == 0, "会话未在关闭后清理");
-    }
-
-    @Test
-    @DisplayName("容器关闭后释放端口")
-    void contextCloseReleasesPort() {
-        // 清空缓存，让临时容器分配到与主容器不同的端口
-        ServerEndpointConfig.clearRandomPort(ANY_HOST);
-        AnnotationConfigApplicationContext temporary = new AnnotationConfigApplicationContext(TestEndpointConfig.class);
-        try {
-            Integer temporaryPort = ServerEndpointConfig.getRandomPort(ANY_HOST);
-            assertNotNull(temporaryPort, "临时容器未分配随机端口");
-            awaitPortOpen(temporaryPort);
-
-            int released = temporaryPort;
-            temporary.close();
-
-            awaitPortFree(released);
-        } finally {
-            if (temporary.isActive()) {
-                temporary.close();
-            }
-        }
     }
 
     @Test

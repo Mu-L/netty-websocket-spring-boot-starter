@@ -225,6 +225,13 @@ public class PojoEndpointServer {
         return config.getPort();
     }
 
+    /**
+     * @return 端口为 {@code 0}（由框架分配随机端口）时返回 {@code true}
+     */
+    public boolean isRandomPort() {
+        return config.isRandomPort();
+    }
+
     public Set<WsPathMatcher> getPathMatcherSet() {
         return pathMatchers;
     }

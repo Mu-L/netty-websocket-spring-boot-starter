@@ -16,24 +16,11 @@ public class PathVariableMapMethodArgumentResolver implements MethodArgumentReso
     public boolean supportsParameter(MethodParameter parameter) {
         PathVariable ann = parameter.getParameterAnnotation(PathVariable.class);
         return (ann != null && Map.class.isAssignableFrom(parameter.getParameterType()) &&
-                !StringUtils.hasText(ann.value()));
+                !StringUtils.hasText(AnnotationNameSupport.resolveFromAnnotation(ann)));
     }
 
     @Override
     public Object resolveArgument(MethodParameter parameter, Channel channel, Object object) throws Exception {
-        PathVariable ann = parameter.getParameterAnnotation(PathVariable.class);
-        String name = ann.name();
-        if (name.isEmpty()) {
-            name = ann.value();
-        }
-        if (name.isEmpty()) {
-            name = parameter.getParameterName();
-            if (name == null) {
-                throw new IllegalArgumentException(
-                        "Name for argument type [" + parameter.getNestedParameterType().getName() +
-                                "] not available, and parameter name information not found in class file either.");
-            }
-        }
         Map<String, String> uriTemplateVars = channel.attr(URI_TEMPLATE).get();
         if (!CollectionUtils.isEmpty(uriTemplateVars)) {
             return uriTemplateVars;

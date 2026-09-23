@@ -4,6 +4,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
+import io.netty.channel.group.ChannelGroup;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.cors.CorsHandler;
 import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
@@ -41,6 +42,7 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     private final PojoEndpointServer pojoEndpointServer;
     private final ServerEndpointConfig config;
     private final EventExecutorGroup eventExecutorGroup;
+    private final ChannelGroup channels;
     private final boolean isCors;
 
     private static ByteBuf faviconByteBuf = null;
@@ -86,10 +88,11 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         return null;
     }
 
-    public HttpServerHandler(PojoEndpointServer pojoEndpointServer, ServerEndpointConfig config, EventExecutorGroup eventExecutorGroup, boolean isCors) {
+    public HttpServerHandler(PojoEndpointServer pojoEndpointServer, ServerEndpointConfig config, EventExecutorGroup eventExecutorGroup, ChannelGroup channels, boolean isCors) {
         this.pojoEndpointServer = pojoEndpointServer;
         this.config = config;
         this.eventExecutorGroup = eventExecutorGroup;
+        this.channels = channels;
         this.isCors = isCors;
     }
 
@@ -261,6 +264,9 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
             handshakeFuture.addListener((ChannelFutureListener) future -> {
                 if (future.isSuccess()) {
+                    // 只登记已完成握手的连接：它们的 pipeline 已具备 WebSocket 编解码能力，
+                    // 关闭时才能被正常投递关闭帧并触发 @OnClose
+                    channels.add(channel);
                     if (isCors) {
                         pipeline.remove(CorsHandler.class);
                     }

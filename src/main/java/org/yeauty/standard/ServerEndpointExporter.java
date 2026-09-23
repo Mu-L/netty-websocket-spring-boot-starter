@@ -30,6 +30,7 @@ import org.yeauty.pojo.PojoMethodMapping;
 import javax.net.ssl.SSLException;
 import java.net.InetSocketAddress;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 /**
  * @author Yeauty
@@ -45,6 +46,11 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
 
     private final Map<InetSocketAddress, WebsocketServer> addressWebsocketServerMap = new HashMap<>();
 
+    /**
+     * 已启动的服务，{@link #destroy()} 之后仍可据此查询线程池是否已终止。
+     */
+    private final List<WebsocketServer> startedServers = new ArrayList<>();
+
     @Override
     public void afterSingletonsInstantiated() {
         registerEndpoints();
@@ -59,12 +65,33 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
             WebsocketServer websocketServer = entry.getValue();
             try {
                 websocketServer.destroy();
-                ServerEndpointConfig.clearRandomPort(websocketServer.getPojoEndpointServer().getHost());
+                PojoEndpointServer pojoEndpointServer = websocketServer.getPojoEndpointServer();
+                // 只有真正使用随机端口的服务才回收端口缓存，避免误清同一 host 上仍在运行的其他服务
+                if (pojoEndpointServer.isRandomPort()) {
+                    ServerEndpointConfig.clearRandomPort(pojoEndpointServer.getHost());
+                }
             } catch (Exception e) {
                 logger.error(String.format("websocket [%s] stop fail", entry.getKey()), e);
             }
         }
         addressWebsocketServerMap.clear();
+    }
+
+    /**
+     * 等待所有已启动服务（含业务执行器）完全终止，用于验证关闭流程是否干净。
+     *
+     * @param timeout 最长等待时间
+     * @param unit    时间单位
+     * @return 全部终止返回 {@code true}，超时返回 {@code false}
+     */
+    public boolean awaitTermination(long timeout, TimeUnit unit) {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        boolean terminated = true;
+        for (WebsocketServer websocketServer : startedServers) {
+            long remaining = Math.max(1L, deadline - System.nanoTime());
+            terminated &= websocketServer.awaitTermination(remaining, TimeUnit.NANOSECONDS);
+        }
+        return terminated;
     }
 
     @Override
@@ -179,6 +206,10 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
             } catch (SSLException e) {
                 logger.error(String.format("websocket [%s] ssl create fail", entry.getKey()), e);
 
+            } catch (DeploymentException e) {
+                // 端口被占用等绑定失败必须让容器启动失败，否则会得到一个从未监听的服务
+                logger.error(String.format("websocket [%s] bind fail", entry.getKey()), e);
+                throw new IllegalStateException("Failed to start websocket server: " + e.getMessage(), e);
             }
         }
     }
@@ -206,6 +237,7 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
             PojoEndpointServer pojoEndpointServer = new PojoEndpointServer(pojoMethodMapping, serverEndpointConfig, path);
             websocketServer = new WebsocketServer(pojoEndpointServer, serverEndpointConfig);
             addressWebsocketServerMap.put(inetSocketAddress, websocketServer);
+            startedServers.add(websocketServer);
         } else {
             websocketServer.getPojoEndpointServer().addPathPojoMethodMapping(path, pojoMethodMapping);
         }

@@ -15,8 +15,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * 注意：框架只有在 {@code @OnOpen} 参数中出现 {@code @PathVariable} 时才会为
  * 该路径注册 {@link org.yeauty.support.AntPathMatcherWrapper}，因此这里在 onOpen 与 onMessage 上都声明了该参数。
  * <p>
- * 另外，{@code @PathVariable} 的 {@code value} 与 {@code name} 互为别名，但框架读取的是 {@code name()}，
- * 因此这里显式使用 {@code name = "id"}（构建未开启 {@code -parameters} 时无法从字节码推断参数名）。
+ * 另外，{@code @PathVariable} 的 {@code value} 与 {@code name} 互为别名：解析器按
+ * {@code name() → value() → 参数名} 的顺序取值，因此这里显式使用 {@code name = "id"}；
+ * {@code value} 简写形式由 {@link AliasEndpoint} 覆盖。
  */
 @ServerEndpoint(path = "/user/{id}", port = "0")
 public class PathEndpoint {

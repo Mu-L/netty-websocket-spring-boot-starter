@@ -26,18 +26,7 @@ public class PathVariableMethodArgumentResolver implements MethodArgumentResolve
     @Override
     public Object resolveArgument(MethodParameter parameter, Channel channel, Object object) throws Exception {
         PathVariable ann = parameter.getParameterAnnotation(PathVariable.class);
-        String name = ann.name();
-        if (name.isEmpty()) {
-            name = ann.value();
-        }
-        if (name.isEmpty()) {
-            name = parameter.getParameterName();
-            if (name == null) {
-                throw new IllegalArgumentException(
-                        "Name for argument type [" + parameter.getNestedParameterType().getName() +
-                                "] not available, and parameter name information not found in class file either.");
-            }
-        }
+        String name = AnnotationNameSupport.resolve(ann, parameter);
         Map<String, String> uriTemplateVars = channel.attr(URI_TEMPLATE).get();
         Object arg = (uriTemplateVars != null ? uriTemplateVars.get(name) : null);
         TypeConverter typeConverter = beanFactory.getTypeConverter();

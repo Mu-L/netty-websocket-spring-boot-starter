@@ -50,6 +50,11 @@ public class ServerEndpointConfig {
     private final Boolean CORS_ALLOW_CREDENTIALS;
 
     /**
+     * 端口是否为 {@code 0}（即由框架分配随机端口）。
+     */
+    private final boolean RANDOM_PORT;
+
+    /**
      * 每个 host 各自缓存一个随机端口，保证同一 host 上 {@code port=0} 的多个端点复用同一个 Netty 服务，
      * 同时避免不同 host 的端点被串到同一个端口上。
      */
@@ -61,6 +66,7 @@ public class ServerEndpointConfig {
         } else {
             this.HOST = host;
         }
+        this.RANDOM_PORT = port == 0;
         this.PORT = getAvailablePort(port);
         this.BOSS_LOOP_GROUP_THREADS = bossLoopGroupThreads;
         this.WORKER_LOOP_GROUP_THREADS = workerLoopGroupThreads;
@@ -123,6 +129,13 @@ public class ServerEndpointConfig {
 
     public String getHost() {
         return HOST;
+    }
+
+    /**
+     * @return 端口为 {@code 0}（由框架分配随机端口）时返回 {@code true}
+     */
+    public boolean isRandomPort() {
+        return RANDOM_PORT;
     }
 
     public int getPort() {
