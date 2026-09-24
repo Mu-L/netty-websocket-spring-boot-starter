@@ -7,7 +7,9 @@ netty-websocket-spring-boot-starter [![License](http://img.shields.io/:license-a
 netty-websocket-spring-boot-starter will help you develop WebSocket server by using Netty in spring-boot,it is easy to develop by using annotation like spring-websocket 
 
 ### Requirement
-- jdk version 17
+- jdk version 17 or later (aligned with Spring Boot 4's minimum requirement; built and tested on JDK 21)
+- spring-boot version 4.x (based on Spring Framework 7)
+- netty version 4.2.x
 
 
 ### Quick Start
@@ -18,7 +20,7 @@ netty-websocket-spring-boot-starter will help you develop WebSocket server by us
 	<dependency>
 		<groupId>org.yeauty</groupId>
 		<artifactId>netty-websocket-spring-boot-starter</artifactId>
-		<version>0.13.0</version>
+		<version>1.0</version>
 	</dependency>
 ```
 
@@ -279,3 +281,10 @@ src/
 - Included the client's `Sec-WebSocket-Protocol` in the response header.
 - When closing the connection, sends a `bye` command first instead of directly closing.
 - Updated `Netty` version to `4.1.118.Final`.
+
+#### 1.0
+
+- Upgraded support for Spring Boot 4 (Spring Framework 7). Minimum JDK is 17, matching Spring Boot 4's baseline; built and tested on JDK 21.
+- Updated `Netty` version to `4.2.18.Final`.
+- Migrated auto-configuration registration from `META-INF/spring.factories` to `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`.
+- Adapted to APIs removed or deprecated in Spring Framework 7 / Netty 4.2.

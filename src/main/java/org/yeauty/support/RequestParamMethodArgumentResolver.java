@@ -29,15 +29,7 @@ public class RequestParamMethodArgumentResolver implements MethodArgumentResolve
     @Override
     public Object resolveArgument(MethodParameter parameter, Channel channel, Object object) throws Exception {
         RequestParam ann = parameter.getParameterAnnotation(RequestParam.class);
-        String name = ann.name();
-        if (name.isEmpty()) {
-            name = parameter.getParameterName();
-            if (name == null) {
-                throw new IllegalArgumentException(
-                        "Name for argument type [" + parameter.getNestedParameterType().getName() +
-                                "] not available, and parameter name information not found in class file either.");
-            }
-        }
+        String name = AnnotationNameSupport.resolve(ann, parameter);
 
         if (!channel.hasAttr(REQUEST_PARAM)) {
             QueryStringDecoder decoder = new QueryStringDecoder(((FullHttpRequest) object).uri());

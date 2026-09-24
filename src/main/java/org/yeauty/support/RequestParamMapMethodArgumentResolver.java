@@ -22,22 +22,11 @@ public class RequestParamMapMethodArgumentResolver implements MethodArgumentReso
     public boolean supportsParameter(MethodParameter parameter) {
         RequestParam requestParam = parameter.getParameterAnnotation(RequestParam.class);
         return (requestParam != null && Map.class.isAssignableFrom(parameter.getParameterType()) &&
-                !StringUtils.hasText(requestParam.name()));
+                !StringUtils.hasText(AnnotationNameSupport.resolveFromAnnotation(requestParam)));
     }
 
     @Override
     public Object resolveArgument(MethodParameter parameter, Channel channel, Object object) throws Exception {
-        RequestParam ann = parameter.getParameterAnnotation(RequestParam.class);
-        String name = ann.name();
-        if (name.isEmpty()) {
-            name = parameter.getParameterName();
-            if (name == null) {
-                throw new IllegalArgumentException(
-                        "Name for argument type [" + parameter.getNestedParameterType().getName() +
-                                "] not available, and parameter name information not found in class file either.");
-            }
-        }
-
         if (!channel.hasAttr(REQUEST_PARAM)) {
             QueryStringDecoder decoder = new QueryStringDecoder(((FullHttpRequest) object).uri());
             channel.attr(REQUEST_PARAM).set(decoder.parameters());

@@ -12,7 +12,7 @@ import java.net.URL;
 import java.security.KeyStore;
 
 /**
- * refer to {@link org.springframework.boot.web.embedded.netty.SslServerCustomizer}
+ * refer to {@code org.springframework.boot.web.embedded.netty.SslServerCustomizer}
  */
 public final class SslUtils {
 
@@ -28,9 +28,9 @@ public final class SslUtils {
             KeyStore keyStore = loadKeyStore(type, resource, keyStorePassword);
             KeyManagerFactory keyManagerFactory = KeyManagerFactory
                     .getInstance(KeyManagerFactory.getDefaultAlgorithm());
-            char[] keyPasswordBytes = (!StringUtils.isEmpty(keyPassword)
+            char[] keyPasswordBytes = (StringUtils.hasLength(keyPassword)
                     ? keyPassword.toCharArray() : null);
-            if (keyPasswordBytes == null && !StringUtils.isEmpty(keyStorePassword)) {
+            if (keyPasswordBytes == null && StringUtils.hasLength(keyStorePassword)) {
                 keyPasswordBytes = keyStorePassword.toCharArray();
             }
             keyManagerFactory.init(keyStore, keyPasswordBytes);
@@ -54,13 +54,13 @@ public final class SslUtils {
 
     private static KeyStore loadKeyStore(String type, String resource, String password)
             throws Exception {
-        type = (StringUtils.isEmpty(type) ? "JKS" : type);
-        if (StringUtils.isEmpty(resource)) {
+        type = (!StringUtils.hasLength(type) ? "JKS" : type);
+        if (!StringUtils.hasLength(resource)) {
             return null;
         }
         KeyStore store = KeyStore.getInstance(type);
         URL url = ResourceUtils.getURL(resource);
-        store.load(url.openStream(), StringUtils.isEmpty(password) ? null : password.toCharArray());
+        store.load(url.openStream(), StringUtils.hasLength(password) ? password.toCharArray() : null);
         return store;
     }
 }

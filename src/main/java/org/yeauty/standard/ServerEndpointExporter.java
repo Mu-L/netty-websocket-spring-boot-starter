@@ -4,12 +4,14 @@ import org.springframework.beans.TypeConverter;
 import org.springframework.beans.TypeMismatchException;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.BeanFactoryAware;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.config.BeanExpressionContext;
 import org.springframework.beans.factory.config.BeanExpressionResolver;
 import org.springframework.beans.factory.support.AbstractBeanFactory;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
+import org.springframework.boot.autoconfigure.AutoConfigurationPackages;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ResourceLoaderAware;
@@ -28,11 +30,12 @@ import org.yeauty.pojo.PojoMethodMapping;
 import javax.net.ssl.SSLException;
 import java.net.InetSocketAddress;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 /**
  * @author Yeauty
  */
-public class ServerEndpointExporter extends ApplicationObjectSupport implements SmartInitializingSingleton, BeanFactoryAware, ResourceLoaderAware {
+public class ServerEndpointExporter extends ApplicationObjectSupport implements SmartInitializingSingleton, BeanFactoryAware, ResourceLoaderAware, DisposableBean {
 
     @Autowired
     Environment environment;
@@ -43,9 +46,52 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
 
     private final Map<InetSocketAddress, WebsocketServer> addressWebsocketServerMap = new HashMap<>();
 
+    /**
+     * 已启动的服务，{@link #destroy()} 之后仍可据此查询线程池是否已终止。
+     */
+    private final List<WebsocketServer> startedServers = new ArrayList<>();
+
     @Override
     public void afterSingletonsInstantiated() {
         registerEndpoints();
+    }
+
+    /**
+     * 容器关闭时优雅停止所有 Netty 服务，释放监听端口与线程池。
+     */
+    @Override
+    public void destroy() {
+        for (Map.Entry<InetSocketAddress, WebsocketServer> entry : addressWebsocketServerMap.entrySet()) {
+            WebsocketServer websocketServer = entry.getValue();
+            try {
+                websocketServer.destroy();
+                PojoEndpointServer pojoEndpointServer = websocketServer.getPojoEndpointServer();
+                // 只有真正使用随机端口的服务才回收端口缓存，避免误清同一 host 上仍在运行的其他服务
+                if (pojoEndpointServer.isRandomPort()) {
+                    ServerEndpointConfig.clearRandomPort(pojoEndpointServer.getHost());
+                }
+            } catch (Exception e) {
+                logger.error(String.format("websocket [%s] stop fail", entry.getKey()), e);
+            }
+        }
+        addressWebsocketServerMap.clear();
+    }
+
+    /**
+     * 等待所有已启动服务（含业务执行器）完全终止，用于验证关闭流程是否干净。
+     *
+     * @param timeout 最长等待时间
+     * @param unit    时间单位
+     * @return 全部终止返回 {@code true}，超时返回 {@code false}
+     */
+    public boolean awaitTermination(long timeout, TimeUnit unit) {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        boolean terminated = true;
+        for (WebsocketServer websocketServer : startedServers) {
+            long remaining = Math.max(1L, deadline - System.nanoTime());
+            terminated &= websocketServer.awaitTermination(remaining, TimeUnit.NANOSECONDS);
+        }
+        return terminated;
     }
 
     @Override
@@ -69,7 +115,7 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
         }
 
         for (Class<?> endpointClass : endpointClasses) {
-            if (ClassUtils.isCglibProxyClass(endpointClass)) {
+            if (endpointClass.getName().contains(ClassUtils.CGLIB_CLASS_SEPARATOR)) {
                 registerEndpoint(endpointClass.getSuperclass());
             } else {
                 registerEndpoint(endpointClass);
@@ -80,34 +126,13 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
     }
 
     private void scanPackage(ApplicationContext context) {
-        String[] basePackages = null;
+        String[] basePackages = resolveBasePackages(context);
 
-        String[] enableWebSocketBeanNames = context.getBeanNamesForAnnotation(EnableWebSocket.class);
-        if (enableWebSocketBeanNames.length != 0) {
-            for (String enableWebSocketBeanName : enableWebSocketBeanNames) {
-                Object enableWebSocketBean = context.getBean(enableWebSocketBeanName);
-                EnableWebSocket enableWebSocket = AnnotationUtils.findAnnotation(enableWebSocketBean.getClass(), EnableWebSocket.class);
-                assert enableWebSocket != null;
-                if (enableWebSocket.scanBasePackages().length != 0) {
-                    basePackages = enableWebSocket.scanBasePackages();
-                    break;
-                }
-            }
-        }
-
-        // use @SpringBootApplication package
-        if (basePackages == null) {
-            String[] springBootApplicationBeanName = context.getBeanNamesForAnnotation(SpringBootApplication.class);
-            Object springBootApplicationBean = context.getBean(springBootApplicationBeanName[0]);
-            SpringBootApplication springBootApplication = AnnotationUtils.findAnnotation(springBootApplicationBean.getClass(), SpringBootApplication.class);
-            assert springBootApplication != null;
-            if (springBootApplication.scanBasePackages().length != 0) {
-                basePackages = springBootApplication.scanBasePackages();
-            } else {
-                String packageName = ClassUtils.getPackageName(springBootApplicationBean.getClass().getName());
-                basePackages = new String[1];
-                basePackages[0] = packageName;
-            }
+        if (basePackages == null || basePackages.length == 0) {
+            logger.warn("No base package to scan for @ServerEndpoint beans: neither explicit scan base packages, " +
+                    "nor a @SpringBootApplication bean, nor registered auto-configuration packages were found. " +
+                    "Only @ServerEndpoint beans already registered in the context will be used.");
+            return;
         }
 
         EndpointClassPathScanner scanHandle = new EndpointClassPathScanner((BeanDefinitionRegistry) context, false);
@@ -118,6 +143,53 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
         for (String basePackage : basePackages) {
             scanHandle.doScan(basePackage);
         }
+    }
+
+    /**
+     * 解析 {@code @ServerEndpoint} 的扫描包，按优先级依次尝试：
+     * <ol>
+     *     <li>{@code @EnableWebSocket(scanBasePackages)} 显式配置的包（优先级最高）；</li>
+     *     <li>{@code @SpringBootApplication} 显式配置的包，否则取该注解所在包；</li>
+     *     <li>{@link AutoConfigurationPackages} 注册的包（覆盖 {@code @SpringBootConfiguration + @EnableAutoConfiguration} 场景）；</li>
+     * </ol>
+     * 没有任何可用信息时返回 {@code null}，由调用方告警并跳过扫描，避免启动失败。
+     */
+    private String[] resolveBasePackages(ApplicationContext context) {
+        String[] enableWebSocketBeanNames = context.getBeanNamesForAnnotation(EnableWebSocket.class);
+        if (enableWebSocketBeanNames.length != 0) {
+            for (String enableWebSocketBeanName : enableWebSocketBeanNames) {
+                Object enableWebSocketBean = context.getBean(enableWebSocketBeanName);
+                EnableWebSocket enableWebSocket = AnnotationUtils.findAnnotation(enableWebSocketBean.getClass(), EnableWebSocket.class);
+                if (enableWebSocket != null && enableWebSocket.scanBasePackages().length != 0) {
+                    return enableWebSocket.scanBasePackages();
+                }
+            }
+        }
+
+        String[] springBootApplicationBeanNames = context.getBeanNamesForAnnotation(SpringBootApplication.class);
+        if (springBootApplicationBeanNames.length != 0) {
+            Object springBootApplicationBean = context.getBean(springBootApplicationBeanNames[0]);
+            SpringBootApplication springBootApplication = AnnotationUtils.findAnnotation(springBootApplicationBean.getClass(), SpringBootApplication.class);
+            if (springBootApplication != null) {
+                if (springBootApplication.scanBasePackages().length != 0) {
+                    return springBootApplication.scanBasePackages();
+                }
+                return new String[]{ClassUtils.getPackageName(springBootApplicationBean.getClass().getName())};
+            }
+        }
+
+        if (beanFactory != null) {
+            try {
+                List<String> autoConfigurationPackages = AutoConfigurationPackages.get(beanFactory);
+                if (!autoConfigurationPackages.isEmpty()) {
+                    return autoConfigurationPackages.toArray(new String[0]);
+                }
+            } catch (IllegalStateException ex) {
+                logger.debug("No auto-configuration packages registered: " + ex.getMessage());
+            }
+        }
+
+        return null;
     }
 
     private void init() {
@@ -134,6 +206,10 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
             } catch (SSLException e) {
                 logger.error(String.format("websocket [%s] ssl create fail", entry.getKey()), e);
 
+            } catch (DeploymentException e) {
+                // 端口被占用等绑定失败必须让容器启动失败，否则会得到一个从未监听的服务
+                logger.error(String.format("websocket [%s] bind fail", entry.getKey()), e);
+                throw new IllegalStateException("Failed to start websocket server: " + e.getMessage(), e);
             }
         }
     }
@@ -161,6 +237,7 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
             PojoEndpointServer pojoEndpointServer = new PojoEndpointServer(pojoMethodMapping, serverEndpointConfig, path);
             websocketServer = new WebsocketServer(pojoEndpointServer, serverEndpointConfig);
             addressWebsocketServerMap.put(inetSocketAddress, websocketServer);
+            startedServers.add(websocketServer);
         } else {
             websocketServer.getPojoEndpointServer().addPathPojoMethodMapping(path, pojoMethodMapping);
         }

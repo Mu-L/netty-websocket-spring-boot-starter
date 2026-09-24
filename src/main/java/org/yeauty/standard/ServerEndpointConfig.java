@@ -5,6 +5,9 @@ import org.springframework.util.StringUtils;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * @author Yeauty
@@ -46,14 +49,24 @@ public class ServerEndpointConfig {
     private final String[] CORS_ORIGINS;
     private final Boolean CORS_ALLOW_CREDENTIALS;
 
-    private static Integer randomPort;
+    /**
+     * 端口是否为 {@code 0}（即由框架分配随机端口）。
+     */
+    private final boolean RANDOM_PORT;
+
+    /**
+     * 每个 host 各自缓存一个随机端口，保证同一 host 上 {@code port=0} 的多个端点复用同一个 Netty 服务，
+     * 同时避免不同 host 的端点被串到同一个端口上。
+     */
+    private static final Map<String, Integer> RANDOM_PORT_MAP = new ConcurrentHashMap<>();
 
     public ServerEndpointConfig(String host, int port, int bossLoopGroupThreads, int workerLoopGroupThreads, boolean useCompressionHandler, int connectTimeoutMillis, int soBacklog, int writeSpinCount, int writeBufferHighWaterMark, int writeBufferLowWaterMark, int soRcvbuf, int soSndbuf, boolean tcpNodelay, boolean soKeepalive, int soLinger, boolean allowHalfClosure, int readerIdleTimeSeconds, int writerIdleTimeSeconds, int allIdleTimeSeconds, int maxFramePayloadLength, boolean useEventExecutorGroup, int eventExecutorGroupThreads, String keyPassword, String keyStore, String keyStorePassword, String keyStoreType, String trustStore, String trustStorePassword, String trustStoreType, String[] corsOrigins, Boolean corsAllowCredentials) {
-        if (StringUtils.isEmpty(host) || "0.0.0.0".equals(host) || "0.0.0.0/0.0.0.0".equals(host)) {
+        if (!StringUtils.hasLength(host) || "0.0.0.0".equals(host) || "0.0.0.0/0.0.0.0".equals(host)) {
             this.HOST = "0.0.0.0";
         } else {
             this.HOST = host;
         }
+        this.RANDOM_PORT = port == 0;
         this.PORT = getAvailablePort(port);
         this.BOSS_LOOP_GROUP_THREADS = bossLoopGroupThreads;
         this.WORKER_LOOP_GROUP_THREADS = workerLoopGroupThreads;
@@ -92,28 +105,37 @@ public class ServerEndpointConfig {
         if (port != 0) {
             return port;
         }
-        if (randomPort != null && randomPort != 0) {
-            return randomPort;
+        Integer cachedPort = RANDOM_PORT_MAP.get(HOST);
+        if (cachedPort != null && cachedPort != 0) {
+            return cachedPort;
         }
-        InetSocketAddress inetSocketAddress = new InetSocketAddress(0);
-        Socket socket = new Socket();
-        try {
-            socket.bind(inetSocketAddress);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        int localPort = socket.getLocalPort();
-        try {
-            socket.close();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        randomPort = localPort;
+        int localPort = findAvailablePort();
+        RANDOM_PORT_MAP.put(HOST, localPort);
         return localPort;
+    }
+
+    private static int findAvailablePort() {
+        try (Socket socket = new Socket()) {
+            socket.bind(new InetSocketAddress(0));
+            int localPort = socket.getLocalPort();
+            if (localPort == 0 || localPort == -1) {
+                throw new IOException("Unable to retrieve the local port of the probe socket");
+            }
+            return localPort;
+        } catch (IOException e) {
+            throw new IllegalStateException("Unable to find an available port for the websocket server", e);
+        }
     }
 
     public String getHost() {
         return HOST;
+    }
+
+    /**
+     * @return 端口为 {@code 0}（由框架分配随机端口）时返回 {@code true}
+     */
+    public boolean isRandomPort() {
+        return RANDOM_PORT;
     }
 
     public int getPort() {
@@ -181,8 +203,40 @@ public class ServerEndpointConfig {
         return ALLOW_HALF_CLOSURE;
     }
 
+    /**
+     * 获取默认 host（{@code 0.0.0.0}）上分配的随机端口。
+     *
+     * @return 随机端口，尚未分配时返回 {@code null}
+     */
     public static Integer getRandomPort() {
-        return randomPort;
+        Integer port = RANDOM_PORT_MAP.get("0.0.0.0");
+        if (port != null) {
+            return port;
+        }
+        if (RANDOM_PORT_MAP.size() == 1) {
+            Iterator<Integer> iterator = RANDOM_PORT_MAP.values().iterator();
+            return iterator.next();
+        }
+        return null;
+    }
+
+    /**
+     * 获取指定 host 上分配的随机端口。
+     *
+     * @param host 端点绑定的 host
+     * @return 随机端口，尚未分配时返回 {@code null}
+     */
+    public static Integer getRandomPort(String host) {
+        return RANDOM_PORT_MAP.get(host);
+    }
+
+    /**
+     * 清除某个 host 上缓存的随机端口，使下一次 {@code port=0} 的端点重新分配端口。
+     *
+     * @param host 端点绑定的 host
+     */
+    public static void clearRandomPort(String host) {
+        RANDOM_PORT_MAP.remove(host);
     }
 
     public int getReaderIdleTimeSeconds() {

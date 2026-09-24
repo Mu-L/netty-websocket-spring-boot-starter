@@ -4,6 +4,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
+import io.netty.channel.group.ChannelGroup;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.cors.CorsHandler;
 import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
@@ -30,9 +31,18 @@ import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
+    /**
+     * 解压缓冲区上限，{@code 0} 表示不限制。
+     * <p>
+     * 注意：{@code WebSocketServerCompressionHandler(int)} 的参数是解压缓冲区上限（maxAllocation），
+     * 而不是压缩级别；无参构造器等价于传入 {@code 0}。
+     */
+    private static final int UNLIMITED_DECOMPRESSION_ALLOCATION = 0;
+
     private final PojoEndpointServer pojoEndpointServer;
     private final ServerEndpointConfig config;
     private final EventExecutorGroup eventExecutorGroup;
+    private final ChannelGroup channels;
     private final boolean isCors;
 
     private static ByteBuf faviconByteBuf = null;
@@ -78,10 +88,11 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         return null;
     }
 
-    public HttpServerHandler(PojoEndpointServer pojoEndpointServer, ServerEndpointConfig config, EventExecutorGroup eventExecutorGroup, boolean isCors) {
+    public HttpServerHandler(PojoEndpointServer pojoEndpointServer, ServerEndpointConfig config, EventExecutorGroup eventExecutorGroup, ChannelGroup channels, boolean isCors) {
         this.pojoEndpointServer = pojoEndpointServer;
         this.config = config;
         this.eventExecutorGroup = eventExecutorGroup;
+        this.channels = channels;
         this.isCors = isCors;
     }
 
@@ -142,7 +153,7 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
         HttpHeaders headers = req.headers();
         String host = headers.get(HttpHeaderNames.HOST);
-        if (StringUtils.isEmpty(host)) {
+        if (!StringUtils.hasLength(host)) {
             if (forbiddenByteBuf != null) {
                 res = new DefaultFullHttpResponse(HTTP_1_1, FORBIDDEN, forbiddenByteBuf.retainedDuplicate());
             } else {
@@ -152,7 +163,7 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             return;
         }
 
-        if (!StringUtils.isEmpty(pojoEndpointServer.getHost()) && !pojoEndpointServer.getHost().equals("0.0.0.0") && !pojoEndpointServer.getHost().equals(host.split(":")[0])) {
+        if (StringUtils.hasLength(pojoEndpointServer.getHost()) && !pojoEndpointServer.getHost().equals("0.0.0.0") && !pojoEndpointServer.getHost().equals(host.split(":")[0])) {
             if (forbiddenByteBuf != null) {
                 res = new DefaultFullHttpResponse(HTTP_1_1, FORBIDDEN, forbiddenByteBuf.retainedDuplicate());
             } else {
@@ -222,7 +233,7 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         ChannelPipeline pipeline = ctx.pipeline();
         if (config.isUseCompressionHandler()) {
             // Add WebSocketServerCompressionHandler, but don't shake hands
-            pipeline.addLast(new WebSocketServerCompressionHandler());
+            pipeline.addLast(new WebSocketServerCompressionHandler(UNLIMITED_DECOMPRESSION_ALLOCATION));
             // Let the request by WebSocketServerCompressionHandler forwarding to the next handler
             ctx.fireChannelRead(req.retain());
         }
@@ -244,15 +255,18 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             }
             String finalPattern = pattern;
 
-            String header = headers.get(HttpHeaders.Names.SEC_WEBSOCKET_PROTOCOL);
+            String header = headers.get(SEC_WEBSOCKET_PROTOCOL);
             HttpHeaders httpHeaders = null;
-            if (header!=null) {
-                httpHeaders = new DefaultHttpHeaders().add(HttpHeaders.Names.SEC_WEBSOCKET_PROTOCOL, header);
+            if (header != null) {
+                httpHeaders = new DefaultHttpHeaders().add(SEC_WEBSOCKET_PROTOCOL, header);
             }
             final ChannelFuture handshakeFuture = handshaker.handshake(ctx.channel(), req,httpHeaders,ctx.channel().newPromise());
 
             handshakeFuture.addListener((ChannelFutureListener) future -> {
                 if (future.isSuccess()) {
+                    // 只登记已完成握手的连接：它们的 pipeline 已具备 WebSocket 编解码能力，
+                    // 关闭时才能被正常投递关闭帧并触发 @OnClose
+                    channels.add(channel);
                     if (isCors) {
                         pipeline.remove(CorsHandler.class);
                     }
