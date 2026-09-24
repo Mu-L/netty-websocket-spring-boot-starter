@@ -6,6 +6,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.core.env.MapPropertySource;
+import org.yeauty.lifecycle.DelayedCloseEndpoint;
+import org.yeauty.lifecycle.HandshakeGateEndpoint;
 import org.yeauty.lifecycle.LifecycleEndpoint;
 import org.yeauty.lifecycle.LifecycleEndpointConfig;
 import org.yeauty.lifecycle.LifecycleLocalEndpoint;
@@ -23,7 +25,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -46,17 +52,25 @@ class NettyWebSocketLifecycleTest {
     private ServerEndpointExporter exporter;
     private int port;
     private int localPort;
+    private int delayedPort;
+    private int handshakePort;
 
     @BeforeEach
     void startServer() {
         LifecycleEndpoint.reset();
         LifecycleLocalEndpoint.reset();
+        DelayedCloseEndpoint.reset();
+        HandshakeGateEndpoint.reset();
         port = reserveFreePort();
         localPort = reserveFreePort();
-        context = newContext(port, localPort);
+        delayedPort = reserveFreePort();
+        handshakePort = reserveFreePort();
+        context = newContext(port, localPort, delayedPort, handshakePort);
         exporter = context.getBean(ServerEndpointExporter.class);
         awaitPortOpen(port);
         awaitPortOpen(localPort);
+        awaitPortOpen(delayedPort);
+        awaitPortOpen(handshakePort);
     }
 
     @AfterEach
@@ -108,9 +122,67 @@ class NettyWebSocketLifecycleTest {
     @DisplayName("端口已被占用时容器启动失败，而不是带着未监听的服务继续启动")
     void portConflictFailsStartup() {
         // 与当前运行中的容器使用同一组端口
-        IllegalStateException failure = assertThrows(IllegalStateException.class, () -> newContext(port, localPort));
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> newContext(port, localPort, delayedPort, handshakePort));
         assertTrue(failure.getMessage().contains("Failed to start websocket server"),
                 "端口冲突应让容器启动失败，实际异常：" + failure.getMessage());
+    }
+
+    @Test
+    @DisplayName("网络线程延迟转发关闭事件时 @OnClose 仍恰好执行一次")
+    void delayedCloseForwardingStillInvokesOnClose() {
+        CollectingListener listener = new CollectingListener();
+        WebSocket webSocket = connect(delayedPort, "/lifecycle-delayed", listener);
+        try {
+            awaitUntil(() -> DelayedCloseEndpoint.openCount() == 1, "会话未建立");
+            assertEquals(1, DelayedCloseEndpoint.sessionCount(), "会话集合应只包含当前连接");
+
+            // 保持连接的情况下关闭容器：网络线程的关闭事件会被延迟 600ms 才转发
+            context.close();
+
+            assertTrue(exporter.awaitTermination(10, TimeUnit.SECONDS), "容器关闭后线程池未终止");
+            awaitUntil(() -> DelayedCloseEndpoint.sessionCount() == 0,
+                    "关闭事件被延迟转发时 @OnClose 未执行，会话未被清理");
+            assertEquals(1, DelayedCloseEndpoint.closeCount(), "@OnClose 执行次数不符合预期");
+            awaitPortFree(delayedPort);
+        } finally {
+            closeQuietly(webSocket);
+        }
+    }
+
+    @Test
+    @DisplayName("握手尚未完成时关闭容器，业务执行器等网络线程退出后才停止")
+    void handshakeInProgressDoesNotUseTerminatedExecutor() throws Exception {
+        CollectingListener listener = new CollectingListener();
+        ExecutorService closer = Executors.newSingleThreadExecutor();
+        CompletableFuture<WebSocket> connecting = HttpClient.newHttpClient()
+                .newWebSocketBuilder()
+                .buildAsync(URI.create("ws://" + LOCAL_HOST + ":" + handshakePort + "/lifecycle-handshake"), listener);
+        Future<?> stopped = null;
+        try {
+            assertTrue(HandshakeGateEndpoint.handshakeStartedLatch().await(10, TimeUnit.SECONDS),
+                    "握手未进入 @BeforeHandshake");
+
+            // 握手还阻塞在网络线程上时关闭容器
+            stopped = closer.submit(() -> context.close());
+            // 端口释放说明关闭流程已走到停止线程池的阶段；
+            // 再留出足够窗口：若实现只是按次序"发出"停止请求，业务执行器此时已经自行终止，
+            // 放行后的握手就会打向一个已终止的执行器。
+            awaitPortFree(handshakePort);
+            sleepQuietly(500);
+            HandshakeGateEndpoint.releaseHandshake();
+
+            stopped.get(30, TimeUnit.SECONDS);
+            assertTrue(exporter.awaitTermination(10, TimeUnit.SECONDS), "容器关闭后线程池未终止");
+            assertEquals(1, HandshakeGateEndpoint.openCount(),
+                    "握手放行后 @OnOpen 未执行：业务执行器可能提前终止，导致 handler 挂载失败");
+            awaitUntil(() -> HandshakeGateEndpoint.sessionCount() == 0, "握手完成的连接未执行 @OnClose");
+            assertEquals(1, HandshakeGateEndpoint.closeCount(), "@OnClose 执行次数不符合预期");
+        } finally {
+            HandshakeGateEndpoint.releaseHandshake();
+            closer.shutdownNow();
+            connecting.cancel(true);
+        }
     }
 
     private void assertEcho(int targetPort, String path, String expected) {
@@ -129,11 +201,13 @@ class NettyWebSocketLifecycleTest {
     /**
      * 通过属性显式指定端口：既不读取也不写入 {@code ServerEndpointConfig} 的随机端口缓存。
      */
-    private static AnnotationConfigApplicationContext newContext(int port, int localPort) {
+    private static AnnotationConfigApplicationContext newContext(int port, int localPort, int delayedPort, int handshakePort) {
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
         Map<String, Object> ports = new HashMap<>();
         ports.put("test.port", String.valueOf(port));
         ports.put("test.local.port", String.valueOf(localPort));
+        ports.put("test.delayed.port", String.valueOf(delayedPort));
+        ports.put("test.handshake.port", String.valueOf(handshakePort));
         context.getEnvironment().getPropertySources()
                 .addFirst(new MapPropertySource("test-websocket-ports", ports));
         context.register(LifecycleEndpointConfig.class);

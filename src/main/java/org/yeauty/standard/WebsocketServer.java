@@ -30,6 +30,8 @@ import javax.net.ssl.SSLException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -155,12 +157,23 @@ public class WebsocketServer {
     }
 
     /**
-     * 优雅关闭：先停止接受新连接，再关闭活跃连接并等待 {@code @OnClose} 回调执行完成，
-     * 最后依次停止网络线程池与业务执行器。可重复调用。
+     * 优雅关闭：分阶段完成，保证 {@code @OnClose} 不会因为线程池提前结束而被丢弃。可重复调用。
      * <p>
      * 顺序很关键：{@code useEventExecutorGroup=true} 时业务 handler 被 pin 到业务执行器上，
-     * 若业务执行器先停，连接关闭产生的 {@code channelInactive} 会因执行器已终止而被拒绝
+     * 若业务执行器先停，网络线程上的 {@code channelInactive} 会因执行器已终止而被拒绝
      * （{@code RejectedExecutionException: event executor terminated}），{@code @OnClose} 回调将被丢弃。
+     * <p>
+     * 注意 {@code shutdownGracefully()} 只是<em>发出</em>停止请求并立即返回，
+     * 请求顺序并不等于线程池实际的终止顺序。因此每个阶段都等待
+     * {@code terminationFuture()} 真正完成，而不是单纯按次序发出请求：
+     * <ol>
+     *     <li>关闭监听 socket，停止接受新连接；</li>
+     *     <li>业务执行器仍在运行时关闭已完成握手的连接；</li>
+     *     <li>请求停止 boss/worker 并<em>等待其真正终止</em>：worker 完全退出前仍可能向业务执行器
+     *     投递事件（延迟转发的 {@code channelInactive}、握手完成后才挂载的 handler 等）；</li>
+     *     <li>确认不会再有事件提交后，才请求停止业务执行器并等待它把已排队的回调排空。</li>
+     * </ol>
+     * 任一阶段超时会记录 ERROR，而不是当作正常停止。
      */
     public synchronized void destroy() {
         if (destroyed) {
@@ -178,6 +191,8 @@ public class WebsocketServer {
             }
         }
 
+        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(SHUTDOWN_TIMEOUT_MILLIS);
+
         // 1) 停止接受新连接
         Channel channel = this.serverChannel;
         if (channel != null) {
@@ -188,22 +203,38 @@ public class WebsocketServer {
         // 2) 业务执行器仍在运行时关闭活跃连接，保证 @OnClose 能被正常投递
         if (!channels.isEmpty()) {
             channels.writeAndFlush(new CloseWebSocketFrame())
-                    .awaitUninterruptibly(SHUTDOWN_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
-            awaitChannelGroupEmpty();
+                    .awaitUninterruptibly(remainingMillis(deadlineNanos), TimeUnit.MILLISECONDS);
+            awaitChannelGroupEmpty(deadlineNanos);
         }
-        channels.close().awaitUninterruptibly(SHUTDOWN_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+        channels.close().awaitUninterruptibly(remainingMillis(deadlineNanos), TimeUnit.MILLISECONDS);
 
-        // 3) 网络线程池
+        // 3) 网络线程池：发出停止请求后必须等到真正终止，否则业务执行器仍可能先于
+        //    网络线程投递的事件结束，导致 @OnClose 丢失
         shutdownGracefully(this.boss);
         shutdownGracefully(this.worker);
+        List<String> unfinished = new ArrayList<>(3);
+        if (!awaitGroupTermination(this.boss, deadlineNanos)) {
+            unfinished.add("boss");
+        }
+        if (!awaitGroupTermination(this.worker, deadlineNanos)) {
+            unfinished.add("worker");
+        }
 
-        // 4) 业务执行器最后停，避免丢弃尚未执行完的 @OnClose
+        // 4) 网络线程已全部退出，不会再有新事件提交给业务执行器；
+        //    此时才停止业务执行器，让它排空已经排队的 @OnClose 等回调
         shutdownGracefully(this.eventExecutorGroup);
+        if (!awaitGroupTermination(this.eventExecutorGroup, deadlineNanos)) {
+            unfinished.add("eventExecutorGroup");
+        }
 
-        // 5) 等待全部终止：destroy() 返回时 @OnClose 已执行完毕
-        awaitTermination(SHUTDOWN_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
-
-        logger.info(String.format("\033[34mNetty WebSocket stopped on port: %s .\033[0m", config.getPort()));
+        if (unfinished.isEmpty()) {
+            logger.info(String.format("\033[34mNetty WebSocket stopped on port: %s .\033[0m", config.getPort()));
+        } else {
+            logger.error(String.format(
+                    "Netty WebSocket on port: %s stopped incompletely: %s did not terminate within %d ms, " +
+                            "some @OnClose callbacks may have been dropped.",
+                    config.getPort(), String.join(", ", unfinished), SHUTDOWN_TIMEOUT_MILLIS));
+        }
     }
 
     /**
@@ -240,9 +271,8 @@ public class WebsocketServer {
         return channels;
     }
 
-    private void awaitChannelGroupEmpty() {
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(SHUTDOWN_TIMEOUT_MILLIS);
-        while (!channels.isEmpty() && System.nanoTime() < deadline) {
+    private void awaitChannelGroupEmpty(long deadlineNanos) {
+        while (!channels.isEmpty() && System.nanoTime() < deadlineNanos) {
             try {
                 Thread.sleep(20);
             } catch (InterruptedException e) {
@@ -253,9 +283,34 @@ public class WebsocketServer {
     }
 
     private static void shutdownGracefully(EventExecutorGroup group) {
-        if (group != null) {
-            group.shutdownGracefully(SHUTDOWN_QUIET_PERIOD_MILLIS, SHUTDOWN_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+        if (group == null) {
+            return;
         }
+        group.shutdownGracefully(SHUTDOWN_QUIET_PERIOD_MILLIS, SHUTDOWN_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * 等待线程池<em>真正终止</em>：{@code shutdownGracefully()} 只是发出停止请求，
+     * 只有 {@code terminationFuture()} 完成才表示线程已退出、不会再有新的事件被投递出去。
+     *
+     * @return 在截止时间前终止返回 {@code true}，超时返回 {@code false}
+     */
+    private static boolean awaitGroupTermination(EventExecutorGroup group, long deadlineNanos) {
+        if (group == null) {
+            return true;
+        }
+        try {
+            if (group.terminationFuture().await(deadlineNanos - System.nanoTime(), TimeUnit.NANOSECONDS)) {
+                return true;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return group.isTerminated();
+    }
+
+    private static long remainingMillis(long deadlineNanos) {
+        return Math.max(1L, TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime()));
     }
 
     private static boolean isTerminated(EventExecutorGroup group) {
