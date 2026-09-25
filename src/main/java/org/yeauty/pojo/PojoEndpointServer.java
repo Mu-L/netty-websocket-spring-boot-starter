@@ -2,6 +2,7 @@ package org.yeauty.pojo;
 
 import io.netty.channel.Channel;
 import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.QueryStringDecoder;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketFrame;
@@ -14,6 +15,7 @@ import org.yeauty.standard.ServerEndpointConfig;
 import org.yeauty.support.*;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.InvocationTargetException;
 import java.util.*;
 
 /**
@@ -21,6 +23,8 @@ import java.util.*;
  * @version 1.0
  */
 public class PojoEndpointServer {
+
+    private static final AttributeKey<Object[]> OPEN_ARGS = AttributeKey.valueOf("WEBSOCKET_OPEN_ARGS");
 
     private static final AttributeKey<Object> POJO_KEY = AttributeKey.valueOf("WEBSOCKET_IMPLEMENT");
 
@@ -58,8 +62,7 @@ public class PojoEndpointServer {
         try {
             implement = methodMapping.getEndpointInstance();
         } catch (Exception e) {
-            logger.error(e);
-            return;
+            throw new IllegalStateException("Failed to create WebSocket endpoint", e);
         }
         channel.attr(POJO_KEY).set(implement);
         Session session = new Session(channel);
@@ -68,11 +71,26 @@ public class PojoEndpointServer {
         if (beforeHandshake != null) {
             try {
                 beforeHandshake.invoke(implement, methodMapping.getBeforeHandshakeArgs(channel, req));
-            } catch (TypeMismatchException e) {
+            } catch (InvocationTargetException e) {
+                throw new IllegalStateException("WebSocket handshake callback failed", e.getCause());
+            } catch (RuntimeException e) {
                 throw e;
-            } catch (Throwable t) {
-                logger.error(t);
+            } catch (Exception e) {
+                throw new IllegalStateException("Failed to invoke WebSocket handshake callback", e);
             }
+        }
+    }
+
+    /** Resolve open arguments before sending HTTP 101 so invalid query parameters get HTTP 400. */
+    public void prepareOnOpen(Channel channel, FullHttpRequest req, String path) throws Exception {
+        channel.attr(REQUEST_PARAM).set(new QueryStringDecoder(req.uri()).parameters());
+        PojoMethodMapping mapping = getPojoMethodMapping(path, channel);
+        if (channel.attr(POJO_KEY).get() == null) {
+            channel.attr(POJO_KEY).set(mapping.getEndpointInstance());
+            channel.attr(SESSION_KEY).set(new Session(channel));
+        }
+        if (mapping.getOnOpen() != null) {
+            channel.attr(OPEN_ARGS).set(mapping.getOnOpenArgs(channel, req));
         }
     }
 
@@ -95,7 +113,8 @@ public class PojoEndpointServer {
         Method onOpenMethod = methodMapping.getOnOpen();
         if (onOpenMethod != null) {
             try {
-                onOpenMethod.invoke(implement, methodMapping.getOnOpenArgs(channel, req));
+                Object[] args = channel.attr(OPEN_ARGS).getAndSet(null);
+                onOpenMethod.invoke(implement, args != null ? args : methodMapping.getOnOpenArgs(channel, req));
             } catch (TypeMismatchException e) {
                 throw e;
             } catch (Throwable t) {
@@ -140,7 +159,7 @@ public class PojoEndpointServer {
             String path = attrPath.get();
             methodMapping = pathMethodMappingMap.get(path);
         }
-        if (methodMapping.getOnError() != null) {
+        if (methodMapping != null && methodMapping.getOnError() != null) {
             if (!channel.hasAttr(SESSION_KEY)) {
                 return;
             }

@@ -35,6 +35,7 @@ public class ServerEndpointConfig {
     private final int WRITER_IDLE_TIME_SECONDS;
     private final int ALL_IDLE_TIME_SECONDS;
     private final int MAX_FRAME_PAYLOAD_LENGTH;
+    private final int MAX_MESSAGE_PAYLOAD_LENGTH;
     private final boolean USE_EVENT_EXECUTOR_GROUP;
     private final int EVENT_EXECUTOR_GROUP_THREADS;
 
@@ -61,6 +62,10 @@ public class ServerEndpointConfig {
     private static final Map<String, Integer> RANDOM_PORT_MAP = new ConcurrentHashMap<>();
 
     public ServerEndpointConfig(String host, int port, int bossLoopGroupThreads, int workerLoopGroupThreads, boolean useCompressionHandler, int connectTimeoutMillis, int soBacklog, int writeSpinCount, int writeBufferHighWaterMark, int writeBufferLowWaterMark, int soRcvbuf, int soSndbuf, boolean tcpNodelay, boolean soKeepalive, int soLinger, boolean allowHalfClosure, int readerIdleTimeSeconds, int writerIdleTimeSeconds, int allIdleTimeSeconds, int maxFramePayloadLength, boolean useEventExecutorGroup, int eventExecutorGroupThreads, String keyPassword, String keyStore, String keyStorePassword, String keyStoreType, String trustStore, String trustStorePassword, String trustStoreType, String[] corsOrigins, Boolean corsAllowCredentials) {
+        this(host, port, bossLoopGroupThreads, workerLoopGroupThreads, useCompressionHandler, connectTimeoutMillis, soBacklog, writeSpinCount, writeBufferHighWaterMark, writeBufferLowWaterMark, soRcvbuf, soSndbuf, tcpNodelay, soKeepalive, soLinger, allowHalfClosure, readerIdleTimeSeconds, writerIdleTimeSeconds, allIdleTimeSeconds, maxFramePayloadLength, useEventExecutorGroup, eventExecutorGroupThreads, keyPassword, keyStore, keyStorePassword, keyStoreType, trustStore, trustStorePassword, trustStoreType, corsOrigins, corsAllowCredentials, 1_048_576);
+    }
+
+    public ServerEndpointConfig(String host, int port, int bossLoopGroupThreads, int workerLoopGroupThreads, boolean useCompressionHandler, int connectTimeoutMillis, int soBacklog, int writeSpinCount, int writeBufferHighWaterMark, int writeBufferLowWaterMark, int soRcvbuf, int soSndbuf, boolean tcpNodelay, boolean soKeepalive, int soLinger, boolean allowHalfClosure, int readerIdleTimeSeconds, int writerIdleTimeSeconds, int allIdleTimeSeconds, int maxFramePayloadLength, boolean useEventExecutorGroup, int eventExecutorGroupThreads, String keyPassword, String keyStore, String keyStorePassword, String keyStoreType, String trustStore, String trustStorePassword, String trustStoreType, String[] corsOrigins, Boolean corsAllowCredentials, int maxMessagePayloadLength) {
         if (!StringUtils.hasLength(host) || "0.0.0.0".equals(host) || "0.0.0.0/0.0.0.0".equals(host)) {
             this.HOST = "0.0.0.0";
         } else {
@@ -85,7 +90,11 @@ public class ServerEndpointConfig {
         this.READER_IDLE_TIME_SECONDS = readerIdleTimeSeconds;
         this.WRITER_IDLE_TIME_SECONDS = writerIdleTimeSeconds;
         this.ALL_IDLE_TIME_SECONDS = allIdleTimeSeconds;
+        if (maxFramePayloadLength <= 0 || maxMessagePayloadLength <= 0) {
+            throw new IllegalArgumentException("maxFramePayloadLength and maxMessagePayloadLength must be positive");
+        }
         this.MAX_FRAME_PAYLOAD_LENGTH = maxFramePayloadLength;
+        this.MAX_MESSAGE_PAYLOAD_LENGTH = maxMessagePayloadLength;
         this.USE_EVENT_EXECUTOR_GROUP = useEventExecutorGroup;
         this.EVENT_EXECUTOR_GROUP_THREADS = eventExecutorGroupThreads;
 
@@ -253,6 +262,20 @@ public class ServerEndpointConfig {
 
     public int getmaxFramePayloadLength() {
         return MAX_FRAME_PAYLOAD_LENGTH;
+    }
+
+    /** Maximum decoded message size, including all fragments. */
+    public int getMaxMessagePayloadLength() {
+        return MAX_MESSAGE_PAYLOAD_LENGTH;
+    }
+
+    /**
+     * Bound decoder workspace while allowing Netty's next inflate-buffer growth request.
+     * Final decoded messages are independently checked against the message limit.
+     */
+    public int getMaxDecompressionAllocation() {
+        long workspace = Math.max(8192L, 2L * MAX_FRAME_PAYLOAD_LENGTH);
+        return (int) Math.min(Integer.MAX_VALUE, MAX_MESSAGE_PAYLOAD_LENGTH + workspace);
     }
 
     public boolean isUseEventExecutorGroup() {

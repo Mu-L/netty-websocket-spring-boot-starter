@@ -68,6 +68,11 @@ public @interface ServerEndpoint {
 
     String maxFramePayloadLength() default "65536";
 
+    /** Maximum decoded message size in bytes, including all fragments (default: 1 MiB).
+     * Also bounds decompression allocation, with additional bounded decoder workspace.
+     */
+    String maxMessagePayloadLength() default "1048576";
+
     //------------------------- eventExecutorGroup -------------------------
 
     String useEventExecutorGroup() default "true"; //use EventExecutorGroup(another thread pool) to perform time-consuming synchronous business logic
@@ -77,7 +82,7 @@ public @interface ServerEndpoint {
     //------------------------- ssl (refer to spring Ssl) -------------------------
 
     /**
-     * {@link org.springframework.boot.web.server.Ssl}
+     * TLS key/trust-store options; map Spring Boot properties explicitly if desired.
      */
 
     String sslKeyPassword() default "";
@@ -97,7 +102,7 @@ public @interface ServerEndpoint {
     //------------------------- cors (refer to spring CrossOrigin) -------------------------
 
     /**
-     * {@link org.springframework.web.bind.annotation.CrossOrigin}
+     * Allowed HTTP origins and credentials for the WebSocket handshake.
      */
 
     String[] corsOrigins() default {};

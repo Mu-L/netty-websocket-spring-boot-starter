@@ -16,7 +16,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
  * 压缩是 Netty 服务级别的配置（同一 host + port 上的端点共享一个服务），
  * 因此这里额外绑定到 127.0.0.1，与默认 host 上的端点互不干扰。
  */
-@ServerEndpoint(path = "/echo-compress", host = "127.0.0.1", port = "0", useCompressionHandler = "true")
+@ServerEndpoint(path = "/echo-compress", host = "127.0.0.1", port = "0", useCompressionHandler = "true", maxMessagePayloadLength = "256")
 public class CompressedEchoEndpoint {
 
     private static final Set<Session> SESSIONS = new CopyOnWriteArraySet<>();
@@ -40,8 +40,11 @@ public class CompressedEchoEndpoint {
         SESSIONS.remove(session);
     }
 
+    public static volatile Throwable lastError;
+
     @OnError
     public void onError(Session session, Throwable throwable) {
+        lastError = throwable;
         SESSIONS.remove(session);
     }
 }

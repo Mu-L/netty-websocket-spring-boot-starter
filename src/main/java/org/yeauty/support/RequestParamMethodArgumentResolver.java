@@ -7,6 +7,7 @@ import org.springframework.beans.TypeConverter;
 import org.springframework.beans.factory.support.AbstractBeanFactory;
 import org.springframework.core.MethodParameter;
 import org.yeauty.annotation.RequestParam;
+import org.yeauty.exception.MissingRequestParameterException;
 
 import java.util.List;
 import java.util.Map;
@@ -15,7 +16,9 @@ import static org.yeauty.pojo.PojoEndpointServer.REQUEST_PARAM;
 
 public class RequestParamMethodArgumentResolver implements MethodArgumentResolver {
 
-    private AbstractBeanFactory beanFactory;
+    private static final String DEFAULT_NONE = "\n\t\t\n\t\t\n\uE000\uE001\uE002\n\t\t\t\t\n";
+
+    private final AbstractBeanFactory beanFactory;
 
     public RequestParamMethodArgumentResolver(AbstractBeanFactory beanFactory) {
         this.beanFactory = beanFactory;
@@ -39,17 +42,24 @@ public class RequestParamMethodArgumentResolver implements MethodArgumentResolve
         Map<String, List<String>> requestParams = channel.attr(REQUEST_PARAM).get();
         List<String> arg = (requestParams != null ? requestParams.get(name) : null);
         TypeConverter typeConverter = beanFactory.getTypeConverter();
-        if (arg == null) {
-            if ("\n\t\t\n\t\t\n\uE000\uE001\uE002\n\t\t\t\t\n".equals(ann.defaultValue())) {
-                return null;
-            }else {
-                return typeConverter.convertIfNecessary(ann.defaultValue(), parameter.getParameterType());
+        boolean hasDefault = !DEFAULT_NONE.equals(ann.defaultValue());
+        boolean missing = arg == null || arg.isEmpty();
+        boolean multiple = List.class.isAssignableFrom(parameter.getParameterType());
+        Object value;
+        if (hasDefault && (missing || (!multiple && arg.get(0).isEmpty()))) {
+            value = ann.defaultValue();
+        } else if (missing) {
+            if (ann.required()) {
+                throw new MissingRequestParameterException(name);
             }
-        }
-        if (List.class.isAssignableFrom(parameter.getParameterType())) {
-            return typeConverter.convertIfNecessary(arg, parameter.getParameterType());
+            value = null;
         } else {
-            return typeConverter.convertIfNecessary(arg.get(0), parameter.getParameterType());
+            value = multiple ? arg : arg.get(0);
         }
+        Object converted = typeConverter.convertIfNecessary(value, parameter.getParameterType());
+        if (converted == null && ann.required() && !hasDefault) {
+            throw new MissingRequestParameterException(name);
+        }
+        return converted;
     }
 }

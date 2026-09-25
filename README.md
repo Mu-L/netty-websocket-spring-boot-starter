@@ -1,4 +1,4 @@
-netty-websocket-spring-boot-starter [![License](http://img.shields.io/:license-apache-brightgreen.svg)](http://www.apache.org/licenses/LICENSE-2.0.html)
+netty-websocket-spring-boot-starter [![License](https://img.shields.io/:license-apache-brightgreen.svg)](https://www.apache.org/licenses/LICENSE-2.0.html)
 ===================================
 
 [中文文档](https://github.com/YeautyYE/netty-websocket-spring-boot-starter/blob/master/README_zh.md) (Chinese Docs)
@@ -7,10 +7,10 @@ netty-websocket-spring-boot-starter [![License](http://img.shields.io/:license-a
 netty-websocket-spring-boot-starter will help you develop WebSocket server by using Netty in spring-boot,it is easy to develop by using annotation like spring-websocket 
 
 ### Requirement
-- jdk version 17 or later (aligned with Spring Boot 4's minimum requirement; built and tested on JDK 21)
-- spring-boot version 4.x (based on Spring Framework 7)
-- netty version 4.2.x
-
+- JDK 17 or later; CI covers JDK 17 and 21.
+- Spring Boot 4 / Spring Framework 7; the tested baseline is Spring Boot 4.1.1.
+- The starter defaults to Netty 4.2.18.Final; Boot 4.1.1's managed 4.2.17.Final is also tested. Validate other combinations before use.
+- Spring Boot 3 users should stay on 0.13.x; read the migration notes before upgrading.
 
 ### Quick Start
 
@@ -20,80 +20,37 @@ netty-websocket-spring-boot-starter will help you develop WebSocket server by us
 	<dependency>
 		<groupId>org.yeauty</groupId>
 		<artifactId>netty-websocket-spring-boot-starter</artifactId>
-		<version>1.0</version>
+		<version>1.0.0</version>
 	</dependency>
 ```
 
-- annotate `@ServerEndpoint` on endpoint class，and annotate `@BeforeHandshake`,`@OnOpen`,`@OnClose`,`@OnError`,`@OnMessage`,`@OnBinary`,`@OnEvent` on the method. e.g.
+- Add this endpoint in your existing Spring Boot application's package or a subpackage. The dependency above includes Spring Boot basics transitively. Existing web applications can use it too; no extra `@Component` or manual exporter registration is needed.
 
 ```java
-@ServerEndpoint(path = "/ws/{arg}")
+package com.example.demo;
+
+import org.yeauty.annotation.OnMessage;
+import org.yeauty.annotation.ServerEndpoint;
+import org.yeauty.pojo.Session;
+
+@ServerEndpoint(path = "/ws", port = "${ws.port:8081}")
 public class MyWebSocket {
-
-    @BeforeHandshake
-    public void handshake(Session session, HttpHeaders headers, @RequestParam String req, @RequestParam MultiValueMap reqMap, @PathVariable String arg, @PathVariable Map pathMap){
-        session.setSubprotocols("stomp");
-        if (!"ok".equals(req)){
-            System.out.println("Authentication failed!");
-            session.close();
-        }
-    }
-    
-    @OnOpen
-    public void onOpen(Session session, HttpHeaders headers, @RequestParam String req, @RequestParam MultiValueMap reqMap, @PathVariable String arg, @PathVariable Map pathMap){
-        System.out.println("new connection");
-        System.out.println(req);
-    }
-
-    @OnClose
-    public void onClose(Session session) throws IOException {
-       System.out.println("one connection closed"); 
-    }
-
-    @OnError
-    public void onError(Session session, Throwable throwable) {
-        throwable.printStackTrace();
-    }
-
     @OnMessage
     public void onMessage(Session session, String message) {
-        System.out.println(message);
-        session.sendText("Hello Netty!");
+        session.sendText(message);
     }
-
-    @OnBinary
-    public void onBinary(Session session, byte[] bytes) {
-        for (byte b : bytes) {
-            System.out.println(b);
-        }
-        session.sendBinary(bytes); 
-    }
-
-    @OnEvent
-    public void onEvent(Session session, Object evt) {
-        if (evt instanceof IdleStateEvent) {
-            IdleStateEvent idleStateEvent = (IdleStateEvent) evt;
-            switch (idleStateEvent.state()) {
-                case READER_IDLE:
-                    System.out.println("read idle");
-                    break;
-                case WRITER_IDLE:
-                    System.out.println("write idle");
-                    break;
-                case ALL_IDLE:
-                    System.out.println("all idle");
-                    break;
-                default:
-                    break;
-            }
-        }
-    }
-
 }
 ```
 
-- use Websocket client to connect `ws://127.0.0.1:80/ws/xxx` 
+- Start your `@SpringBootApplication` and run this in the browser console:
 
+```javascript
+const ws = new WebSocket("ws://127.0.0.1:8081/ws");
+ws.onopen = () => ws.send("hello");
+ws.onmessage = event => console.log(event.data); // hello
+```
+
+WebSocket uses its own Netty listener; `server.port` does not configure it automatically. This example defaults to 8081, overridable with `ws.port`; the annotation's default remains 80 for compatibility. Use separate ports for separate servers. For endpoints outside the main package, add `@EnableWebSocket(scanBasePackages = "com.example.endpoints")` to a configuration class.
 
 ### Annotation
 ###### @ServerEndpoint 
@@ -137,7 +94,7 @@ public class MyWebSocket {
 |path|"/"|path of WebSocket can be aliased for `value`
 |host|"0.0.0.0"|host of WebSocket.`"0.0.0.0"` means all of local addresses
 |port|80|port of WebSocket。if the port equals to 0，it will use a random and available port(to get the port [Multi-Endpoint](#multi-endpoint))
-|bossLoopGroupThreads|0|num of threads in bossEventLoopGroup
+|bossLoopGroupThreads|1|num of threads in bossEventLoopGroup
 |workerLoopGroupThreads|0|num of threads in workerEventLoopGroup
 |useCompressionHandler|false|whether add WebSocketServerCompressionHandler to pipeline
 |optionConnectTimeoutMillis|30000|the same as `ChannelOption.CONNECT_TIMEOUT_MILLIS` in Netty
@@ -155,8 +112,9 @@ public class MyWebSocket {
 |writerIdleTimeSeconds|0|the same as `writerIdleTimeSeconds` in `IdleStateHandler` and add `IdleStateHandler` to `pipeline` when it is not 0
 |allIdleTimeSeconds|0|the same as `allIdleTimeSeconds` in `IdleStateHandler` and add `IdleStateHandler` to `pipeline` when it is not 0
 |maxFramePayloadLength|65536|Maximum allowable frame payload length.
-|useEventExecutorGroup|true|Whether to use another thread pool to perform time-consuming synchronous business logic
-|eventExecutorGroupThreads|16|num of threads in bossEventLoopGroup
+|maxMessagePayloadLength|1048576 (1 MiB)|Maximum decoded message size in bytes, including all fragments; also bounds decompression workspace (see lifecycle notes). Must be positive; raise explicitly for larger application messages.
+|useEventExecutorGroup|true|Dispatch message, close and event callbacks to a business executor; handshake and open callbacks still run on the I/O thread
+|eventExecutorGroupThreads|16|Number of business executor threads
 |sslKeyPassword|""(mean not set)|the same as `server.ssl.key-password` in spring-boot
 |sslKeyStore|""(mean not set)|the same as `server.ssl.key-store` in spring-boot
 |sslKeyStorePassword|""(mean not set)|the same as `server.ssl.key-store-password` in spring-boot
@@ -180,7 +138,7 @@ public class MyWebSocket {
 - then configurate in `application.properties`
 ```
 ws.host=0.0.0.0
-ws.port=80
+ws.port=8081
 ```
 
 ### Custom Favicon
@@ -211,12 +169,75 @@ src/
 ```
 
 ### Multi Endpoint
-- base on [Quick-Start](#quick-start),use annotation `@ServerEndpoint` and `@Component` in classes which hope to become a endpoint.
-- you can get all socket addresses in `ServerEndpointExporter.getInetSocketAddressSet()`.
-- when there are different addresses(different host or different port) in WebSocket,they will use different `ServerBootstrap` instance.
-- when the addresses are the same,but path is different,they will use the same `ServerBootstrap` instance.
-- when multiple port of endpoint is 0 ,they will use the same random port
-- when multiple port of endpoint is the same as the path,host can't be set as "0.0.0.0",because it means it binds all of the addresses
+- Add `@ServerEndpoint` to each endpoint class; `@Component` is not required.
+- Different paths on the same host and port share one Netty server. Keep thread, TLS, compression and size-limit settings consistent on that listener. Different hosts or ports use separate servers.
+- Endpoints with `port="0"` share a random port only on the same host. Query it after startup with `ServerEndpointConfig.getRandomPort(host)`; the cache is cleared on shutdown.
+- `0.0.0.0` binds all local addresses; avoid overlapping listeners on the same port with another host.
+
+### Parameters and handshakes
+Use this project's `org.yeauty.annotation.RequestParam` and `PathVariable`, rather than similarly named Spring MVC or Jakarta annotations. Explicit names are recommended:
+
+```java
+@ServerEndpoint(path = "/ws/{room}", port = "8081")
+public class RoomSocket {
+    @OnOpen
+    public void onOpen(Session session,
+                       @PathVariable("room") String room,
+                       @RequestParam(value = "name", defaultValue = "guest") String name) {
+        session.sendText(room + ":" + name);
+    }
+}
+```
+
+Connect to `ws://127.0.0.1:8081/ws/lobby?name=Alice`; absent or empty `name` uses `guest`. Use the imports from Quick Start, plus this project's `OnOpen`, `PathVariable` and `RequestParam`.
+- `required=true` is the default: a missing parameter rejects the handshake with HTTP 400, as does a conversion failure. `required=false` permits `null`; use wrapper types such as `Integer` for optional numbers.
+- `defaultValue` covers absent or empty scalar parameters and implicitly makes them optional. An empty String without a default is still a supplied value; applications own non-blank validation.
+- For repeated values use `@RequestParam("tag") List<String>`; for all parameters use `@RequestParam Map<String, String>` or `MultiValueMap<String, String>`.
+- Explicit parameter annotations take precedence over message-body binding; use an unannotated `String` for the text body.
+- Omitting annotation names requires `-parameters` in the application's own Maven/Gradle compilation. The starter's compiler settings do not propagate.
+- In `@BeforeHandshake`, call `session.close()` to reject a connection. A thrown callback exception aborts the handshake. Declare supported subprotocols with `session.setSubprotocols("chat")`; the server negotiates a single supported protocol from the client's offer.
+
+### Threads, message limits and lifecycle
+`@BeforeHandshake` and `@OnOpen` run on the I/O thread and should return promptly. With the default `useEventExecutorGroup=true`, message, close and event callbacks run on the business executor. Size this pool for the workload and avoid long blocking operations. The thread for `@OnError` depends on the source of the error.
+
+`maxFramePayloadLength` limits individual frames. The new `maxMessagePayloadLength` defaults to 1 MiB and bounds decoded messages and fragment aggregation. Decompression allocation is bounded separately at the message limit plus `max(8192, 2 × maxFramePayloadLength)` bytes of decoder workspace (capped at `Integer.MAX_VALUE`). Oversized decoded/aggregated messages close the connection with code 1009; decompression failures also disconnect. Configure both limits deliberately for large messages, for example:
+
+```java
+@ServerEndpoint(path = "/upload", port = "8081",
+        maxFramePayloadLength = "1048576",
+        maxMessagePayloadLength = "8388608")
+```
+
+Bind and TLS initialization failures fail application startup. Closing the Spring context stops listening, sends WebSocket close frames, closes connections, then terminates network and business executors in order. The caller waits up to 5 seconds per listener; timeouts are logged, with late network events still preceding business-executor shutdown. Long-running user callbacks can delay actual resource termination; allow for this in deployment termination grace periods. Do not expect a `bye` text message.
+
+### Mapping TLS properties
+This component owns a separate listener; `server.ssl.*` is not applied automatically. Map shared properties explicitly:
+
+```java
+@ServerEndpoint(path = "/ws", port = "${ws.port:8443}",
+        sslKeyStore = "${server.ssl.key-store}",
+        sslKeyStorePassword = "${server.ssl.key-store-password}",
+        sslKeyStoreType = "${server.ssl.key-store-type:PKCS12}")
+```
+
+### Migrating from 0.13.x to 1.0.0
+1. Upgrade the application to Spring Boot 4 / Spring Framework 7 and JDK 17 or later.
+2. Update the dependency. Auto-configuration uses `AutoConfiguration.imports`; normal Boot applications need no manual exporter bean.
+3. Review callbacks that relied on missing required parameters becoming null. Mark genuinely optional parameters `required=false` or supply defaults.
+4. Raise `maxMessagePayloadLength` explicitly for messages over 1 MiB; keep all settings consistent across endpoints sharing a listener.
+5. Review subprotocol negotiation: only an explicitly supported protocol is returned, rather than echoing the entire client offer.
+6. Boot's BOM may manage a different Netty patch version. If overriding it, align all Netty modules through the application's Netty BOM/version property instead of mixing individual modules.
+
+### Building and verifying
+Use JDK 17 or 21. The included Maven Wrapper pins Maven 3.9.11; use `mvnw.cmd` on Windows. Run from the repository root:
+
+```bash
+./mvnw -B -ntp clean verify
+./mvnw -B -ntp -Pconsumer-test verify
+./mvnw -B -ntp -Prelease -Dgpg.skip=true verify
+```
+
+The consumer test creates an independent Boot application from the packaged starter and verifies startup, messages and shutdown with a single application dependency. See [RELEASING.md](RELEASING.md) for signing and Central Portal publishing. The release verification above skips signing and does not upload.
 
 ---
 ### Change Log
@@ -279,12 +300,17 @@ src/
 - Fixed the issue where WebSocket compression was not working.
 - Upgraded support for Spring Boot 3.
 - Included the client's `Sec-WebSocket-Protocol` in the response header.
-- When closing the connection, sends a `bye` command first instead of directly closing.
+- See the current lifecycle notes for close behavior; clients should not depend on a `bye` text message.
 - Updated `Netty` version to `4.1.118.Final`.
 
-#### 1.0
+#### 1.0.0
 
-- Upgraded support for Spring Boot 4 (Spring Framework 7). Minimum JDK is 17, matching Spring Boot 4's baseline; built and tested on JDK 21.
+- Upgraded support for Spring Boot 4 (Spring Framework 7). Minimum JDK is 17, matching Spring Boot 4's baseline; built and tested on JDK 17 and 21.
 - Updated `Netty` version to `4.2.18.Final`.
 - Migrated auto-configuration registration from `META-INF/spring.factories` to `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`.
 - Adapted to APIs removed or deprecated in Spring Framework 7 / Netty 4.2.
+- Include Spring Boot basics transitively; add a standalone consumer integration test and JDK/Netty CI matrix.
+- Fix required/default parameter handling, annotated text-message arguments and subprotocol negotiation; abort failed handshakes.
+- Add configurable decoded-message and decompression allocation limits.
+- Fix executor shutdown ordering, bind-failure startup, scan fallbacks and parameter aliases.
+- Update bilingual setup/migration documentation; migrate publishing to Central Portal and package the project LICENSE.

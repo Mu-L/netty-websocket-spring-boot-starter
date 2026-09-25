@@ -46,7 +46,7 @@ public class WebsocketServer {
     private static final long SHUTDOWN_QUIET_PERIOD_MILLIS = 100L;
 
     /**
-     * 单个线程池等待终止的上限（毫秒）。
+     * 整个关闭流程的等待预算（毫秒）。
      */
     private static final long SHUTDOWN_TIMEOUT_MILLIS = 5_000L;
 
@@ -138,7 +138,7 @@ public class WebsocketServer {
                 channelFuture = bootstrap.bind(new InetSocketAddress(InetAddress.getByName(config.getHost()), config.getPort()));
             } catch (UnknownHostException e) {
                 channelFuture = bootstrap.bind(config.getHost(), config.getPort());
-                e.printStackTrace();
+                logger.debug("Resolving WebSocket bind host through Netty: " + config.getHost(), e);
             }
         }
 
@@ -197,14 +197,16 @@ public class WebsocketServer {
         Channel channel = this.serverChannel;
         if (channel != null) {
             this.serverChannel = null;
-            channel.close().awaitUninterruptibly();
+            channel.close().awaitUninterruptibly(remainingMillis(deadlineNanos), TimeUnit.MILLISECONDS);
         }
 
         // 2) 业务执行器仍在运行时关闭活跃连接，保证 @OnClose 能被正常投递
         if (!channels.isEmpty()) {
             channels.writeAndFlush(new CloseWebSocketFrame())
                     .awaitUninterruptibly(remainingMillis(deadlineNanos), TimeUnit.MILLISECONDS);
-            awaitChannelGroupEmpty(deadlineNanos);
+            // Reserve time for forced close and executor termination if a peer ignores the close frame.
+            awaitChannelGroupEmpty(Math.min(deadlineNanos,
+                    System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1_000)));
         }
         channels.close().awaitUninterruptibly(remainingMillis(deadlineNanos), TimeUnit.MILLISECONDS);
 
@@ -222,8 +224,21 @@ public class WebsocketServer {
 
         // 4) 网络线程已全部退出，不会再有新事件提交给业务执行器；
         //    此时才停止业务执行器，让它排空已经排队的 @OnClose 等回调
-        shutdownGracefully(this.eventExecutorGroup);
-        if (!awaitGroupTermination(this.eventExecutorGroup, deadlineNanos)) {
+        EventExecutorGroup business = this.eventExecutorGroup;
+        if (isTerminated(this.boss) && isTerminated(this.worker)) {
+            shutdownGracefully(business);
+        } else {
+            // Never discard late channelInactive events merely because the caller's wait budget expired.
+            Runnable stopBusiness = () -> {
+                if (isTerminated(this.boss) && isTerminated(this.worker)) {
+                    shutdownGracefully(business);
+                }
+            };
+            if (this.boss != null) this.boss.terminationFuture().addListener(future -> stopBusiness.run());
+            if (this.worker != null) this.worker.terminationFuture().addListener(future -> stopBusiness.run());
+            stopBusiness.run();
+        }
+        if (!awaitGroupTermination(business, deadlineNanos)) {
             unfinished.add("eventExecutorGroup");
         }
 
@@ -232,7 +247,7 @@ public class WebsocketServer {
         } else {
             logger.error(String.format(
                     "Netty WebSocket on port: %s stopped incompletely: %s did not terminate within %d ms, " +
-                            "some @OnClose callbacks may have been dropped.",
+                            "shutdown will continue after pending network callbacks complete.",
                     config.getPort(), String.join(", ", unfinished), SHUTDOWN_TIMEOUT_MILLIS));
         }
     }

@@ -3,6 +3,8 @@ package org.yeauty.standard;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.handler.codec.DecoderException;
+import io.netty.handler.codec.TooLongFrameException;
 import io.netty.handler.codec.http.websocketx.*;
 import org.yeauty.pojo.PojoEndpointServer;
 
@@ -22,6 +24,13 @@ class WebSocketServerHandler extends SimpleChannelInboundHandler<WebSocketFrame>
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         pojoEndpointServer.doOnError(ctx.channel(), cause);
+        if (cause instanceof TooLongFrameException) {
+            ctx.writeAndFlush(new CloseWebSocketFrame(1009, "Message exceeds configured limit"))
+                    .addListener(ChannelFutureListener.CLOSE);
+        } else if (cause instanceof DecoderException) {
+            // A decoder failure leaves no usable message to deliver.
+            ctx.close();
+        }
     }
 
     @Override

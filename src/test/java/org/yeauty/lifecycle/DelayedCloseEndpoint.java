@@ -29,6 +29,8 @@ public class DelayedCloseEndpoint {
      */
     public static final long CLOSE_FORWARD_DELAY_MILLIS = 600L;
 
+    public static volatile long closeForwardDelayMillis = CLOSE_FORWARD_DELAY_MILLIS;
+
     private static final Set<Session> SESSIONS = new CopyOnWriteArraySet<>();
     private static final AtomicInteger OPENED = new AtomicInteger();
     private static final AtomicInteger CLOSED = new AtomicInteger();
@@ -46,6 +48,7 @@ public class DelayedCloseEndpoint {
     }
 
     public static void reset() {
+        closeForwardDelayMillis = CLOSE_FORWARD_DELAY_MILLIS;
         SESSIONS.clear();
         OPENED.set(0);
         CLOSED.set(0);
@@ -58,7 +61,7 @@ public class DelayedCloseEndpoint {
         session.pipeline().addFirst("delayed-inactive", new ChannelInboundHandlerAdapter() {
             @Override
             public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-                Thread.sleep(CLOSE_FORWARD_DELAY_MILLIS);
+                Thread.sleep(closeForwardDelayMillis);
                 super.channelInactive(ctx);
             }
         });

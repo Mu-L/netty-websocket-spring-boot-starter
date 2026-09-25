@@ -9,6 +9,7 @@ import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.TrustManagerFactory;
 import java.net.URL;
+import java.io.InputStream;
 import java.security.KeyStore;
 
 /**
@@ -60,7 +61,9 @@ public final class SslUtils {
         }
         KeyStore store = KeyStore.getInstance(type);
         URL url = ResourceUtils.getURL(resource);
-        store.load(url.openStream(), StringUtils.hasLength(password) ? password.toCharArray() : null);
+        try (InputStream stream = url.openStream()) {
+            store.load(stream, StringUtils.hasLength(password) ? password.toCharArray() : null);
+        }
         return store;
     }
 }

@@ -151,6 +151,20 @@ class NettyWebSocketLifecycleTest {
     }
 
     @Test
+    void shutdownTimeoutPreservesLateCloseCallback() {
+        DelayedCloseEndpoint.closeForwardDelayMillis = 6_100;
+        WebSocket socket = connect(delayedPort, "/lifecycle-delayed", new CollectingListener());
+        try {
+            awaitUntil(() -> DelayedCloseEndpoint.openCount() == 1, "Connection did not open");
+            context.close();
+            assertTrue(exporter.awaitTermination(10, TimeUnit.SECONDS), "Executors did not finish after timeout");
+            assertEquals(1, DelayedCloseEndpoint.closeCount(), "Late onClose was dropped");
+        } finally {
+            closeQuietly(socket);
+        }
+    }
+
+    @Test
     @DisplayName("握手尚未完成时关闭容器，业务执行器等网络线程退出后才停止")
     void handshakeInProgressDoesNotUseTerminatedExecutor() throws Exception {
         CollectingListener listener = new CollectingListener();

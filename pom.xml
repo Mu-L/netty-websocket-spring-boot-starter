@@ -6,18 +6,18 @@
 
     <groupId>org.yeauty</groupId>
     <artifactId>netty-websocket-spring-boot-starter</artifactId>
-    <version>1.0</version>
+    <version>1.0.0</version>
 
     <name>netty-websocket-spring-boot-starter</name>
     <description>
         netty-websocket-spring-boot-starter is a Java WebSocket Framework based on Netty
     </description>
-    <url>http://www.yeauty.org/</url>
+    <url>https://github.com/YeautyYE/netty-websocket-spring-boot-starter</url>
 
     <licenses>
         <license>
             <name>The Apache Software License, Version 2.0</name>
-            <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
         </license>
     </licenses>
 
@@ -29,8 +29,8 @@
     </developers>
 
     <scm>
-        <connection>scm:git:git://github.com/YeautyYE/netty-websocket-spring-boot-starter.git</connection>
-        <developerConnection>scm:git:ssh://github.com/YeautyYE/netty-websocket-spring-boot-starter.git
+        <connection>scm:git:https://github.com/YeautyYE/netty-websocket-spring-boot-starter.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/YeautyYE/netty-websocket-spring-boot-starter.git
         </developerConnection>
         <url>https://github.com/YeautyYE/netty-websocket-spring-boot-starter</url>
     </scm>
@@ -38,6 +38,7 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <project.build.outputTimestamp>2026-09-25T00:00:00Z</project.build.outputTimestamp>
         <maven.compiler.release>17</maven.compiler.release>
         <netty.version>4.2.18.Final</netty.version>
         <spring-boot.version>4.1.1</spring-boot.version>
@@ -48,9 +49,8 @@
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-autoconfigure</artifactId>
+            <artifactId>spring-boot-starter</artifactId>
             <version>${spring-boot.version}</version>
-            <optional>true</optional>
         </dependency>
 
         <dependency>
@@ -117,6 +117,7 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-gpg-plugin</artifactId>
                         <version>3.2.8</version>
+                        <configuration><bestPractices>true</bestPractices></configuration>
                         <executions>
                             <execution>
                                 <phase>verify</phase>
@@ -126,36 +127,73 @@
                             </execution>
                         </executions>
                     </plugin>
-                    <!-- Nexus Staging Plugin, auto deploy close and release -->
+                    <!-- Uploads to Central Portal for validation; publishing is a separate action. -->
                     <plugin>
-                        <groupId>org.sonatype.plugins</groupId>
-                        <artifactId>nexus-staging-maven-plugin</artifactId>
-                        <version>1.7.0</version>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.11.0</version>
                         <extensions>true</extensions>
                         <configuration>
-                            <serverId>ossrh</serverId>
-                            <nexusUrl>https://oss.sonatype.org/</nexusUrl>
-                            <autoReleaseAfterClose>true</autoReleaseAfterClose>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>false</autoPublish>
+                            <waitUntil>validated</waitUntil>
                         </configuration>
                     </plugin>
                 </plugins>
             </build>
 
-            <distributionManagement>
-                <snapshotRepository>
-                    <id>ossrh</id>
-                    <url>https://oss.sonatype.org/content/repositories/snapshots</url>
-                </snapshotRepository>
-                <repository>
-                    <id>ossrh</id>
-                    <url>https://oss.sonatype.org/service/local/staging/deploy/maven2</url>
-                </repository>
-            </distributionManagement>
+
+        </profile>
+        <profile>
+            <id>consumer-test</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-invoker-plugin</artifactId>
+                        <version>3.9.1</version>
+                        <configuration>
+                            <projectsDirectory>src/it</projectsDirectory>
+                            <cloneProjectsTo>${project.build.directory}/it</cloneProjectsTo>
+                            <localRepositoryPath>${project.build.directory}/it-repository</localRepositoryPath>
+                            <filterProperties>
+                                <starterVersion>${project.version}</starterVersion>
+                                <bootVersion>${spring-boot.version}</bootVersion>
+                            </filterProperties>
+                            <goals><goal>test</goal></goals>
+                            <streamLogs>true</streamLogs>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <goals><goal>install</goal><goal>run</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
         </profile>
     </profiles>
 
     <build>
+        <resources>
+            <resource><directory>src/main/resources</directory></resource>
+            <resource>
+                <directory>${project.basedir}</directory>
+                <targetPath>META-INF</targetPath>
+                <includes><include>LICENSE</include></includes>
+            </resource>
+        </resources>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>3.3.1</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.2</version>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>

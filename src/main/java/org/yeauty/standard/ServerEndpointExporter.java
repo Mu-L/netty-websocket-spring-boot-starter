@@ -202,9 +202,10 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
                 pojoEndpointServer.getPathMatcherSet().forEach(pathMatcher -> stringJoiner.add("'" + pathMatcher.getPattern() + "'"));
                 logger.info(String.format("\033[34mNetty WebSocket started on port: %s with context path(s): %s .\033[0m", pojoEndpointServer.getPort(), stringJoiner.toString()));
             } catch (InterruptedException e) {
-                logger.error(String.format("websocket [%s] init fail", entry.getKey()), e);
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted while starting websocket server: " + entry.getKey(), e);
             } catch (SSLException e) {
-                logger.error(String.format("websocket [%s] ssl create fail", entry.getKey()), e);
+                throw new IllegalStateException("Failed to configure websocket TLS: " + entry.getKey(), e);
 
             } catch (DeploymentException e) {
                 // 端口被占用等绑定失败必须让容器启动失败，否则会得到一个从未监听的服务
@@ -270,6 +271,8 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
 
         int maxFramePayloadLength = resolveAnnotationValue(annotation.maxFramePayloadLength(), Integer.class, "maxFramePayloadLength");
 
+        int maxMessagePayloadLength = resolveAnnotationValue(annotation.maxMessagePayloadLength(), Integer.class, "maxMessagePayloadLength");
+
         boolean useEventExecutorGroup = resolveAnnotationValue(annotation.useEventExecutorGroup(), Boolean.class, "useEventExecutorGroup");
         int eventExecutorGroupThreads = resolveAnnotationValue(annotation.eventExecutorGroupThreads(), Integer.class, "eventExecutorGroupThreads");
 
@@ -296,7 +299,7 @@ public class ServerEndpointExporter extends ApplicationObjectSupport implements 
                 , maxFramePayloadLength, useEventExecutorGroup, eventExecutorGroupThreads
                 , sslKeyPassword, sslKeyStore, sslKeyStorePassword, sslKeyStoreType
                 , sslTrustStore, sslTrustStorePassword, sslTrustStoreType
-                , corsOrigins, corsAllowCredentials);
+                , corsOrigins, corsAllowCredentials, maxMessagePayloadLength);
 
         return serverEndpointConfig;
     }

@@ -1,7 +1,6 @@
 package org.yeauty.standard;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
 import io.netty.channel.group.ChannelGroup;
@@ -19,6 +18,9 @@ import io.netty.util.concurrent.EventExecutorGroup;
 import org.springframework.beans.TypeMismatchException;
 import org.springframework.util.StringUtils;
 import org.yeauty.pojo.PojoEndpointServer;
+import org.yeauty.exception.MissingRequestParameterException;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 import org.yeauty.support.WsPathMatcher;
 
 import java.io.InputStream;
@@ -31,13 +33,7 @@ import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
-    /**
-     * 解压缓冲区上限，{@code 0} 表示不限制。
-     * <p>
-     * 注意：{@code WebSocketServerCompressionHandler(int)} 的参数是解压缓冲区上限（maxAllocation），
-     * 而不是压缩级别；无参构造器等价于传入 {@code 0}。
-     */
-    private static final int UNLIMITED_DECOMPRESSION_ALLOCATION = 0;
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(HttpServerHandler.class);
 
     private final PojoEndpointServer pojoEndpointServer;
     private final ServerEndpointConfig config;
@@ -73,17 +69,15 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
 
     private static ByteBuf buildStaticRes(String resPath) {
-        try {
-            InputStream inputStream = HttpServerHandler.class.getResourceAsStream(resPath);
+        try (InputStream inputStream = HttpServerHandler.class.getResourceAsStream(resPath)) {
             if (inputStream != null) {
-                int available = inputStream.available();
-                if (available != 0) {
-                    byte[] bytes = new byte[available];
-                    inputStream.read(bytes);
-                    return ByteBufAllocator.DEFAULT.buffer(bytes.length).writeBytes(bytes);
+                byte[] bytes = inputStream.readAllBytes();
+                if (bytes.length > 0) {
+                    return Unpooled.unreleasableBuffer(Unpooled.wrappedBuffer(bytes)).asReadOnly();
                 }
             }
         } catch (Exception e) {
+            logger.warn("Failed to load WebSocket HTTP resource: " + resPath, e);
         }
         return null;
     }
@@ -100,10 +94,10 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest msg) throws Exception {
         try {
             handleHttpRequest(ctx, msg);
-        } catch (TypeMismatchException e) {
+        } catch (TypeMismatchException | MissingRequestParameterException e) {
             FullHttpResponse res = new DefaultFullHttpResponse(HTTP_1_1, BAD_REQUEST);
             sendHttpResponse(ctx, msg, res);
-            e.printStackTrace();
+            logger.debug("Invalid WebSocket handshake parameter", e);
         } catch (Exception e) {
             FullHttpResponse res;
             if (internalServerErrorByteBuf != null) {
@@ -112,7 +106,7 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
                 res = new DefaultFullHttpResponse(HTTP_1_1, INTERNAL_SERVER_ERROR);
             }
             sendHttpResponse(ctx, msg, res);
-            e.printStackTrace();
+            logger.error("WebSocket handshake failed", e);
         }
     }
 
@@ -127,7 +121,7 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         super.channelInactive(ctx);
     }
 
-    private void handleHttpRequest(ChannelHandlerContext ctx, FullHttpRequest req) {
+    private void handleHttpRequest(ChannelHandlerContext ctx, FullHttpRequest req) throws Exception {
         FullHttpResponse res;
         // Handle a bad request.
         if (!req.decoderResult().isSuccess()) {
@@ -230,10 +224,11 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
                 subprotocols = ctx.channel().attr(subprotocolsAttrKey).get();
             }
         }
+        pojoEndpointServer.prepareOnOpen(channel, req, pattern);
         ChannelPipeline pipeline = ctx.pipeline();
         if (config.isUseCompressionHandler()) {
             // Add WebSocketServerCompressionHandler, but don't shake hands
-            pipeline.addLast(new WebSocketServerCompressionHandler(UNLIMITED_DECOMPRESSION_ALLOCATION));
+            pipeline.addLast(new WebSocketServerCompressionHandler(config.getMaxDecompressionAllocation()));
             // Let the request by WebSocketServerCompressionHandler forwarding to the next handler
             ctx.fireChannelRead(req.retain());
         }
@@ -247,7 +242,8 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             if (config.getReaderIdleTimeSeconds() != 0 || config.getWriterIdleTimeSeconds() != 0 || config.getAllIdleTimeSeconds() != 0) {
                 pipeline.addLast(new IdleStateHandler(config.getReaderIdleTimeSeconds(), config.getWriterIdleTimeSeconds(), config.getAllIdleTimeSeconds()));
             }
-            pipeline.addLast(new WebSocketFrameAggregator(Integer.MAX_VALUE));
+            pipeline.addLast(new WebSocketMessageSizeHandler(config.getMaxMessagePayloadLength()));
+            pipeline.addLast(new WebSocketFrameAggregator(config.getMaxMessagePayloadLength()));
             if (config.isUseEventExecutorGroup()) {
                 pipeline.addLast(eventExecutorGroup, new WebSocketServerHandler(pojoEndpointServer));
             } else {
@@ -255,12 +251,8 @@ class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             }
             String finalPattern = pattern;
 
-            String header = headers.get(SEC_WEBSOCKET_PROTOCOL);
-            HttpHeaders httpHeaders = null;
-            if (header != null) {
-                httpHeaders = new DefaultHttpHeaders().add(SEC_WEBSOCKET_PROTOCOL, header);
-            }
-            final ChannelFuture handshakeFuture = handshaker.handshake(ctx.channel(), req,httpHeaders,ctx.channel().newPromise());
+            // Netty negotiates one supported subprotocol; never echo the client's entire offer.
+            final ChannelFuture handshakeFuture = handshaker.handshake(ctx.channel(), req);
 
             handshakeFuture.addListener((ChannelFutureListener) future -> {
                 if (future.isSuccess()) {

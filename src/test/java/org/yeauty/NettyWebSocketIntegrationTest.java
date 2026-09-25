@@ -213,6 +213,26 @@ class NettyWebSocketIntegrationTest {
     @Test
     @DisplayName("开启压缩处理器后完成 permessage-deflate 协商")
     void compressionIsNegotiatedWithNettyClient() throws Exception {
+        assertCompressionExchange("hello", false);
+    }
+
+    @Test
+    void oversizedDecompressedMessageDisconnectsWithoutDelivery() throws Exception {
+        assertCompressionExchange("x".repeat(262144), true);
+    }
+
+    @Test
+    void compressedMessageAtExactLimitIsDelivered() throws Exception {
+        assertCompressionExchange("x".repeat(256), false);
+    }
+
+    @Test
+    void decodedMessageOverLimitClosesEvenBelowAllocationBound() throws Exception {
+        assertCompressionExchange("x".repeat(257), true);
+    }
+
+    private void assertCompressionExchange(String payload, boolean oversized) throws Exception {
+        CompressedEchoEndpoint.lastError = null;
         EventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
         try {
             AtomicReference<String> extensions = new AtomicReference<>();
@@ -272,11 +292,14 @@ class NettyWebSocketIntegrationTest {
                 assertTrue(handshakeDone.await(10, TimeUnit.SECONDS), "websocket 握手未完成");
                 awaitUntil(() -> CompressedEchoEndpoint.sessionCount() == 1, "服务端未建立会话");
 
-                channel.writeAndFlush(new TextWebSocketFrame("hello")).sync();
+                channel.writeAndFlush(new TextWebSocketFrame(payload)).sync();
 
-                String reply = received.poll(10, TimeUnit.SECONDS);
-                assertEquals("compressed:hello", reply,
-                        "服务端会话数=" + CompressedEchoEndpoint.sessionCount() + "，协商扩展=" + extensions.get());
+                if (oversized) {
+                    assertTrue(channel.closeFuture().await(10, TimeUnit.SECONDS), "Oversized decompressed message should close the connection");
+                    assertTrue(received.isEmpty(), "Oversized message must not reach the endpoint");
+                } else {
+                    assertEquals("compressed:" + payload, received.poll(10, TimeUnit.SECONDS), "Server error: " + CompressedEchoEndpoint.lastError);
+                }
 
                 String negotiated = extensions.get();
                 assertNotNull(negotiated, "握手响应中没有 Sec-WebSocket-Extensions 头");
@@ -286,7 +309,7 @@ class NettyWebSocketIntegrationTest {
                 channel.close().await(5, TimeUnit.SECONDS);
             }
         } finally {
-            group.shutdownGracefully();
+            group.shutdownGracefully(0, 5, TimeUnit.SECONDS).sync();
         }
     }
 

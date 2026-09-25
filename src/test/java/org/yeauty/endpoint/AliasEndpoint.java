@@ -34,10 +34,6 @@ public class AliasEndpoint {
         OPENED.add(id + "|" + token + "|" + mode);
     }
 
-    /**
-     * 路径变量声明为 {@code int}：{@code @OnMessage} 中的 {@code String} 参数会被
-     * {@link org.yeauty.support.TextMethodArgumentResolver} 优先匹配（框架既有行为）。
-     */
     @OnMessage
     public void onMessage(Session session, @PathVariable("id") int id, String message) {
         session.sendText("alias:" + id + ":" + message);
